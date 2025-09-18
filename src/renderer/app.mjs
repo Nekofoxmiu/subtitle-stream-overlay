@@ -95,18 +95,20 @@ async function loadInitialConfig() {
   overlaySync.connect(getCurrentPort());
 }
 
-const debouncedSyncStyle = debounce(async () => {
-  const style = collectStyle();
-  await persistStyle(style);
-  window.api.notifyOverlay({ style });
-  syncOverlayConnection();
-  if (!state.activeDownloaded) return;
-  // 重新設定下載影片的連線位置
-  const url = buildCacheUrl(state.activeDownloaded);
-  dom.video.src = url;
-}, 120);
+
 
 function setupEventHandlers() {
+
+  const debouncedSyncStyle = debounce(async () => {
+    const style = collectStyle();
+    await persistStyle(style);
+    window.api.notifyOverlay({ style });
+    syncOverlayConnection();
+    if (!state.activeDownloaded) return;
+    // 重新設定下載影片的連線位置
+    const url = buildCacheUrl(state.activeDownloaded);
+    dom.video.src = url;
+  }, 120);
   dom.pickCookies?.addEventListener('click', handlePickCookies);
   dom.clearCookies?.addEventListener('click', handleClearCookies);
   dom.checkBins?.addEventListener('click', handleCheckBins);

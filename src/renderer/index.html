@@ -8,8 +8,8 @@
                  img-src 'self' data:;
                  style-src 'self' 'unsafe-inline';
                  script-src 'self';
-                 connect-src 'self' ws://localhost:*;
-                 media-src 'self' blob:;
+                 connect-src 'self' ws://localhost:* http://localhost:* http://127.0.0.1:*;
+                 media-src 'self' blob: http://localhost:* http://127.0.0.1:*;
                  frame-src 'none'">
   <title>Subtitle Overlay</title>
   <style>
@@ -71,7 +71,7 @@
   
   <fieldset>
     <legend>yt-dlp 日誌</legend>
-    <pre id="ytLog" style="background:#111; color:#0f0; height:200px; overflow:auto; white-space:pre-wrap"></pre>
+    <pre id="ytLog" style="background:transparent; color:rgb(0, 0, 0); height:200px; overflow:auto; white-space:pre-wrap"></pre>
   </fieldset>
 
   <fieldset>
@@ -117,12 +117,6 @@
   <fieldset>
     <legend>影片播放（同步 overlay 時間軸）</legend>
     <video id="localVideo" controls></video>
-    <div class="row">
-      <button id="playBtn" class="btn">播放</button>
-      <button id="pauseBtn" class="btn">暫停</button>
-      <button id="seekBack5" class="btn">⟲ -5s</button>
-      <button id="seekFwd5" class="btn">⟳ +5s</button>
-    </div>
   </fieldset>
 
   <script type="module" src="./app.mjs"></script>
