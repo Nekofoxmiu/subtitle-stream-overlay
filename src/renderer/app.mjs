@@ -1,17 +1,58 @@
-const $ = (s) => document.querySelector(s);
-const binInfo = $('#binInfo'), portView = $('#portView'), applyMsg = $('#applyMsg');
+const $ = (selector) => document.querySelector(selector);
 
-let currentAssText = '';
-let currentFonts = []; // [{name, data(base64)}]
-let currentJobId = null; // 目前 yt-dlp 下載工作 ID
+const dom = {
+  binInfo: $('#binInfo'),
+  portInput: $('#port'),
+  portView: $('#portView'),
+  applyMsg: $('#applyMsg'),
+  cookiesView: $('#cookiesView'),
+  log: $('#ytLog'),
+  dlProg: $('#dlProg'),
+  dlTxt: $('#dlTxt'),
+  video: $('#localVideo'),
+  videoFile: $('#videoFile'),
+  ytUrl: $('#ytUrl'),
+  subsPicked: $('#subsPicked'),
+  fontsPicked: $('#fontsPicked'),
+  pickCookies: $('#pickCookies'),
+  clearCookies: $('#clearCookies'),
+  checkBins: $('#checkBins'),
+  pickSubs: $('#pickSubs'),
+  pickFonts: $('#pickFonts'),
+  ytDownload: $('#ytDownload'),
+  ytCancel: $('#ytCancel'),
+  ytFetch: $('#ytFetch'),
+  background: $('#background'),
+  align: $('#align'),
+  maxWidth: $('#maxWidth'),
+  applyToOverlay: $('#applyToOverlay')
+};
+
+dom.downloadedSelect = createDownloadedSelect(dom.videoFile?.closest('.row'));
+
+const state = {
+  currentAssText: '',
+  currentFonts: [],
+  jobId: null,
+  downloadedVideos: [], // { filename, addedAt }
+  activeDownloaded: '',
+  objectUrl: ''
+};
 
 /* ---------------- Overlay 時間同步 ---------------- */
 class OverlaySync {
-  constructor(videoEl) { this.ws = null; this.timer = null; this.port = 1976; this.video = videoEl; }
+  constructor(videoEl) {
+    this.ws = null;
+    this.timer = null;
+    this.port = 1976;
+    this.video = videoEl;
+  }
   connect(port) {
     if (this.port === port && this.ws && this.ws.readyState === 1) return;
     this.port = port;
-    if (this.ws) try { this.ws.close(); } catch { }
+    if (this.ws) {
+      try { this.ws.close(); } catch { /* noop */ }
+    }
     this.ws = new WebSocket(`ws://localhost:${port}`);
   }
   start() {
@@ -23,227 +64,393 @@ class OverlaySync {
       this.ws.send(JSON.stringify({ type: 'setTime', payload: { t } }));
     }, 33);
   }
-  stop() { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
+  stop() {
+    if (!this.timer) return;
+    clearInterval(this.timer);
+    this.timer = null;
+  }
 }
-const videoEl = $('#localVideo');
-const overlaySync = new OverlaySync(videoEl);
 
-/* ---------------- yt-dlp 下載並播放 ---------------- */
-const cookiesView = $('#cookiesView');
+const overlaySync = new OverlaySync(dom.video);
 
-// 初始化時一併載入 cookiesPath
-(async () => {
-  const cfg = await window.api.getConfig();
-  $('#port').value = String(cfg.output.port);
-  portView.textContent = String(cfg.output.port);
-  cookiesView.textContent = cfg.cookiesPath ? cfg.cookiesPath : '(未設定)';
-  overlaySync.connect(cfg.output.port);
+/* ---------------- 初始化 ---------------- */
+(async function init() {
+  setupEventHandlers();
+  updateDownloadedSelect();
+  await loadInitialConfig();
+  window.api.onYtProgress(handleYtProgress);
 })();
 
-// 讓使用者選 cookies.txt
-$('#pickCookies').onclick = async () => {
+async function loadInitialConfig() {
+  const cfg = await window.api.getConfig();
+  if (cfg?.output) {
+    const { output } = cfg;
+    if (output.port != null) dom.portInput.value = String(output.port);
+    if (output.maxWidth != null) dom.maxWidth.value = String(output.maxWidth);
+    if (output.align) dom.align.value = output.align;
+    if (output.background) dom.background.value = output.background;
+  }
+  dom.portView.textContent = dom.portInput.value || '';
+  dom.cookiesView.textContent = cfg?.cookiesPath ? cfg.cookiesPath : '(未設定)';
+  overlaySync.connect(getCurrentPort());
+}
+
+const debouncedSyncStyle = debounce(async () => {
+  const style = collectStyle();
+  await persistStyle(style);
+  window.api.notifyOverlay({ style });
+  syncOverlayConnection();
+  if (!state.activeDownloaded) return;
+  // 重新設定下載影片的連線位置
+  const url = buildCacheUrl(state.activeDownloaded);
+  dom.video.src = url;
+}, 120);
+
+function setupEventHandlers() {
+  dom.pickCookies?.addEventListener('click', handlePickCookies);
+  dom.clearCookies?.addEventListener('click', handleClearCookies);
+  dom.checkBins?.addEventListener('click', handleCheckBins);
+  dom.pickSubs?.addEventListener('click', handlePickSubs);
+  dom.pickFonts?.addEventListener('click', handlePickFonts);
+  dom.ytFetch?.addEventListener('click', handleFetchSubsOnly);
+  dom.ytDownload?.addEventListener('click', handleDownloadVideo);
+  dom.ytCancel?.addEventListener('click', handleCancelDownload);
+  dom.videoFile?.addEventListener('change', handleLocalFileSelected);
+  dom.downloadedSelect?.addEventListener('change', handleDownloadedSelectChange);
+
+  ['background', 'align', 'maxWidth', 'port'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', debouncedSyncStyle);
+    if (el.tagName === 'INPUT') {
+      el.addEventListener('input', debouncedSyncStyle);
+    }
+  });
+
+  dom.portInput?.addEventListener('input', () => {
+    dom.portView.textContent = dom.portInput.value || '';
+  });
+
+  dom.applyToOverlay?.addEventListener('click', async () => {
+    const style = collectStyle();
+    await persistStyle(style);
+    window.api.notifyOverlay({
+      style,
+      subContent: state.currentAssText,
+      fontBuffers: state.currentFonts
+    });
+    dom.applyMsg.textContent = `已更新。請以 OBS Browser Source 指向 http://localhost:${style.port}/overlay`;
+    syncOverlayConnection();
+  });
+}
+
+/* ---------------- Cookies ---------------- */
+async function handlePickCookies() {
   const files = await window.api.openFiles({ filters: [{ name: 'Cookies', extensions: ['txt'] }] });
   if (!files.length) return;
   const cookiesPath = files[0];
-  await window.api.setConfig({ cookiesPath });   // 儲存到 config
-  cookiesView.textContent = cookiesPath;
-  applyMsg.textContent = '已設定 cookies';
-};
+  await window.api.setConfig({ cookiesPath });
+  dom.cookiesView.textContent = cookiesPath;
+  dom.applyMsg.textContent = '已設定 cookies';
+}
 
-// 清除 cookies 設定
-$('#clearCookies').onclick = async () => {
+async function handleClearCookies() {
   await window.api.setConfig({ cookiesPath: '' });
-  cookiesView.textContent = '(未設定)';
-  applyMsg.textContent = '已清除 cookies';
-};
+  dom.cookiesView.textContent = '(未設定)';
+  dom.applyMsg.textContent = '已清除 cookies';
+}
 
-const logEl = document.querySelector('#ytLog');
+/* ---------------- yt-dlp 日誌/下載 ---------------- */
 function appendLog(line) {
-  logEl.textContent += line.endsWith('\n') ? line : (line + '\n');
-  logEl.scrollTop = logEl.scrollHeight;
+  const msg = line.endsWith('\n') ? line : `${line}\n`;
+  dom.log.textContent += msg;
+  dom.log.scrollTop = dom.log.scrollHeight;
 }
 
-// 下載影片進度/日誌
-window.api.onYtProgress((ev) => {
-  if (ev.type === 'log') appendLog(`[${ev.stream}] ${ev.line}`);
-  else if (ev.type === 'progress') {
-    document.querySelector('#dlProg').style.display = '';
-    document.querySelector('#dlProg').value = ev.percent || 0;
-    document.querySelector('#dlTxt').textContent = `${(ev.percent||0).toFixed(1)}% ${ev.speed||''} ${ev.eta||''}`;
-  } else if (ev.type === 'done') {
-    document.querySelector('#dlProg').style.display = 'none';
-    document.querySelector('#dlTxt').textContent = '';
-    appendLog(`[done] ${ev.filename}`);
-    const port = parseInt(document.querySelector('#port').value, 10);
-    document.querySelector('#localVideo').src = `http://localhost:${port}/video-cache/${encodeURIComponent(ev.filename)}`;
-    document.querySelector('#localVideo').play().catch(()=>{});
-  } else if (ev.type === 'error') {
-    document.querySelector('#dlProg').style.display = 'none';
-    appendLog(`[error] ${ev.message || '未知錯誤'}`);
-    alert('下載失敗：' + (ev.message || '未知錯誤'));
+function showDownloadProgress(show) {
+  if (!dom.dlProg) return;
+  dom.dlProg.style.display = show ? '' : 'none';
+  if (!show) {
+    dom.dlProg.value = 0;
+    if (dom.dlTxt) dom.dlTxt.textContent = '';
   }
-});
-
-// 下載字幕(ASS)
-document.querySelector('#ytFetch').onclick = async () => {
-  const url = document.querySelector('#ytUrl').value.trim();
-  if (!url) return alert('請輸入連結');
-  try {
-    const { files } = await window.api.fetchSubsFromYt({ url }); // 你先前已有此 IPC；若名稱不同請對應
-    if (!files?.length) return alert('未取得字幕');
-    appendLog(`[subs] 已下載字幕：\n${files.join('\n')}`);
-    // 自動載入第一個 .ass
-    const ass = files.find(f=>f.toLowerCase().endsWith('.ass')) || files[0];
-    const assText = await window.api.readTextFile(ass);
-    currentAssText = assText;
-    const style = collectStyle();
-    await window.api.setConfig({ output: style });
-    window.api.notifyOverlay({ style, subContent: currentAssText, fontBuffers: currentFonts });
-    document.querySelector('#subsPicked').textContent = ass;
-  } catch (e) {
-    appendLog(`[subs-error] ${e.message || e}`);
-    alert('下載字幕失敗：' + (e.message || e));
-  }
-};
-
-
-function showDl(show) {
-  $('#dlProg').style.display = show ? '' : 'none';
-  if (!show) { $('#dlProg').value = 0; $('#dlTxt').textContent = ''; }
 }
 
-$('#ytDownload').onclick = async () => {
-  const url = $('#ytUrl').value.trim();
-  if (!url) return alert('請輸入 YouTube 連結');
-  const { port } = collectStyle();
-  showDl(true);
+async function handleDownloadVideo() {
+  const url = dom.ytUrl?.value.trim();
+  if (!url) {
+    alert('請輸入 YouTube 連結');
+    return;
+  }
+  showDownloadProgress(true);
   try {
     const { jobId } = await window.api.ytdlpDownloadVideo({ url });
-    currentJobId = jobId;
-    window.api.onYtProgress((ev) => {
-      if (ev?.jobId !== currentJobId) return;
-      if (ev.type === 'progress') {
-        $('#dlProg').value = ev.percent || 0;
-        $('#dlTxt').textContent = `${(ev.percent || 0).toFixed(1)}% ${ev.speed || ''} ${ev.eta || ''}`;
-      } else if (ev.type === 'done') {
-        showDl(false);
-        const fileUrl = `http://localhost:${port}/video-cache/${encodeURIComponent(ev.filename)}`;
-        videoEl.src = fileUrl;
-        videoEl.play().catch(() => { });
-        overlaySync.connect(port);
-        overlaySync.start();
-      } else if (ev.type === 'error') {
-        showDl(false);
-        alert('下載失敗：' + (ev.message || '未知錯誤'));
-      }
-    });
-  } catch (e) {
-    showDl(false);
-    alert(e.message);
+    state.jobId = jobId;
+  } catch (err) {
+    showDownloadProgress(false);
+    alert(err?.message || String(err));
   }
-};
+}
 
-/* ---------------- 本地影片 ---------------- */
-$('#videoFile').addEventListener('change', (ev) => {
-  const f = ev.target.files?.[0];
-  if (!f) return;
-  const url = URL.createObjectURL(f);
-  videoEl.src = url;
-  const { port } = collectStyle();
-  overlaySync.connect(port);
-  overlaySync.start();
-});
+async function handleCancelDownload() {
+  if (!state.jobId) return;
+  try {
+    await window.api.ytdlpCancel(state.jobId);
+    appendLog(`[cancel] 已取消 ${state.jobId}`);
+  } catch (err) {
+    alert(err?.message || String(err));
+  } finally {
+    state.jobId = null;
+    showDownloadProgress(false);
+  }
+}
 
-/* ---------------- bins / 字幕 / 字型 / 樣式 ---------------- */
-function setBinInfo(bins) {
-  binInfo.textContent = `yt-dlp: ${bins.ytDlpPath || '未設定'} | ffmpeg: ${bins.ffmpegPath || '未設定'}`;
+function handleYtProgress(ev) {
+  if (!ev) return;
+  if (ev.type === 'log') {
+    appendLog(`[${ev.stream}] ${ev.line}`);
+    return;
+  }
+
+  const matchesJob = !ev.jobId || !state.jobId || ev.jobId === state.jobId;
+  if (!matchesJob && ['progress', 'done', 'error'].includes(ev.type)) {
+    return;
+  }
+
+  if (ev.type === 'progress') {
+    if (dom.dlProg) dom.dlProg.value = ev.percent || 0;
+    if (dom.dlTxt) dom.dlTxt.textContent = `${(ev.percent || 0).toFixed(1)}% ${ev.speed || ''} ${ev.eta || ''}`.trim();
+  } else if (ev.type === 'done') {
+    handleDownloadDone(ev.filename);
+  } else if (ev.type === 'error') {
+    showDownloadProgress(false);
+    alert('下載失敗：' + (ev.message || '未知錯誤'));
+  }
+}
+
+function handleDownloadDone(filename) {
+  showDownloadProgress(false);
+  state.jobId = null;
+  appendLog(`[done] ${filename}`);
+  if (!filename) return;
+  addDownloadedVideo(filename);
+  playDownloadedVideo(filename);
+}
+
+function addDownloadedVideo(filename) {
+  if (!filename) return;
+  const exists = state.downloadedVideos.some((item) => item.filename === filename);
+  if (!exists) {
+    state.downloadedVideos.push({ filename, addedAt: Date.now() });
+  }
+  state.activeDownloaded = filename;
+  updateDownloadedSelect(filename);
+}
+
+function playDownloadedVideo(filename) {
+  if (!filename) return;
+  releaseObjectUrl();
+  const url = buildCacheUrl(filename);
+  state.activeDownloaded = filename;
+  updateDownloadedSelect(filename);
+  playVideo(url);
+}
+
+function buildCacheUrl(filename) {
+  const port = getCurrentPort();
+  return `http://localhost:${port}/video-cache/${encodeURIComponent(filename)}`;
+}
+
+/* ---------------- 字幕處理 ---------------- */
+async function handleFetchSubsOnly() {
+  const url = dom.ytUrl?.value.trim();
+  if (!url) {
+    alert('請輸入連結');
+    return;
+  }
+  try {
+    const { files } = await window.api.fetchSubsFromYt({ url });
+    if (!files?.length) {
+      alert('未取得字幕');
+      return;
+    }
+    appendLog(`[subs] 已下載字幕：\n${files.join('\n')}`);
+    const assPath = files.find((f) => f.toLowerCase().endsWith('.ass')) || files[0];
+    await loadAssIntoOverlay(assPath);
+    dom.subsPicked.textContent = assPath;
+  } catch (err) {
+    appendLog(`[subs-error] ${err?.message || err}`);
+    alert('下載字幕失敗：' + (err?.message || err));
+  }
+}
+
+async function handlePickSubs() {
+  const files = await window.api.openFiles({ filters: [{ name: 'Subtitles', extensions: ['ass', 'srt', 'vtt', 'ssa'] }] });
+  if (!files.length) return;
+  let path = files[0];
+  if (!path.toLowerCase().endsWith('.ass')) {
+    try {
+      const { outPath } = await window.api.convertToAss({ inputPath: path });
+      path = outPath;
+      dom.subsPicked.textContent = `${path}（已轉 ASS）`;
+    } catch (err) {
+      alert('轉 ASS 失敗：' + (err?.message || err));
+      return;
+    }
+  } else {
+    dom.subsPicked.textContent = path;
+  }
+  try {
+    await loadAssIntoOverlay(path);
+  } catch (err) {
+    alert('讀取 ASS 失敗：' + (err?.message || err));
+  }
 }
 
 async function loadAssIntoOverlay(assPath) {
   const assText = await window.api.readTextFile(assPath);
-  currentAssText = assText;
+  state.currentAssText = assText;
   const style = collectStyle();
-  await window.api.setConfig({ output: style });
-  window.api.notifyOverlay({ style, subContent: currentAssText, fontBuffers: currentFonts });
+  await persistStyle(style);
+  window.api.notifyOverlay({ style, subContent: state.currentAssText, fontBuffers: state.currentFonts });
+  syncOverlayConnection();
 }
 
-$('#checkBins').onclick = async () => {
-  try {
-    const r = await window.api.ensureBins();
-    setBinInfo(r);
-  } catch (e) { alert(e.message); }
-};
-
-$('#pickSubs').onclick = async () => {
-  const files = await window.api.openFiles({ filters: [{ name: 'Subtitles', extensions: ['ass', 'srt', 'vtt', 'ssa'] }] });
-  if (!files.length) return;
-  let p = files[0];
-  if (!p.toLowerCase().endsWith('.ass')) {
-    try {
-      const { outPath } = await window.api.convertToAss({ inputPath: p });
-      p = outPath;
-      $('#subsPicked').textContent = `${p}（已轉 ASS）`;
-    } catch (e) { alert('轉 ASS 失敗：' + e.message); return; }
-  } else {
-    $('#subsPicked').textContent = p;
-  }
-  try { await loadAssIntoOverlay(p); } catch (e) { alert('讀取 ASS 失敗：' + e.message); }
-};
-
-$('#pickFonts').onclick = async () => {
+/* ---------------- 字型 ---------------- */
+async function handlePickFonts() {
   const files = await window.api.openFiles({ filters: [{ name: 'Fonts', extensions: ['ttf', 'otf', 'woff2', 'woff'] }] });
   if (!files.length) return;
-  currentFonts = [];
+  state.currentFonts = [];
   const names = [];
-  for (const p of files) {
-    const base64 = await window.api.readBinaryBase64(p);
-    currentFonts.push({ name: p.split(/[\\/]/).pop(), data: base64 });
-    names.push(p.split(/[\\/]/).pop());
+  for (const filePath of files) {
+    const base64 = await window.api.readBinaryBase64(filePath);
+    const name = filePath.split(/[\\/]/).pop();
+    state.currentFonts.push({ name, data: base64 });
+    names.push(name);
   }
-  $('#fontsPicked').textContent = names.join(', ');
+  dom.fontsPicked.textContent = names.join(', ');
   const style = collectStyle();
-  await window.api.setConfig({ output: style });
-  window.api.notifyOverlay({ style, fontBuffers: currentFonts });
-};
+  await persistStyle(style);
+  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+}
+
+/* ---------------- Binaries ---------------- */
+async function handleCheckBins() {
+  try {
+    const bins = await window.api.ensureBins();
+    setBinInfo(bins);
+  } catch (err) {
+    alert(err?.message || String(err));
+  }
+}
+
+function setBinInfo(bins) {
+  if (!bins) return;
+  dom.binInfo.textContent = `yt-dlp: ${bins.ytDlpPath || '未設定'} | ffmpeg: ${bins.ffmpegPath || '未設定'}`;
+}
+
+/* ---------------- 本地影片 ---------------- */
+function handleLocalFileSelected(ev) {
+  const file = ev.target.files?.[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
+  state.objectUrl = url;
+  state.activeDownloaded = '';
+  updateDownloadedSelect('');
+  playVideo(url);
+}
+
+function handleDownloadedSelectChange() {
+  const filename = dom.downloadedSelect?.value;
+  if (!filename) {
+    state.activeDownloaded = '';
+    return;
+  }
+  playDownloadedVideo(filename);
+}
+
+function playVideo(url) {
+  if (!url) return;
+  dom.video.src = url;
+  dom.video.play().catch(() => { /* ignore autoplay error */ });
+  syncOverlayConnection();
+}
+
+function releaseObjectUrl() {
+  if (!state.objectUrl) return;
+  try { URL.revokeObjectURL(state.objectUrl); } catch { /* ignore */ }
+  state.objectUrl = '';
+}
+
+function syncOverlayConnection() {
+  overlaySync.connect(getCurrentPort());
+  overlaySync.start();
+}
+
+/* ---------------- 樣式設定 ---------------- */
+function getCurrentPort() {
+  const port = parseInt(dom.portInput?.value, 10);
+  return Number.isFinite(port) ? port : 1976;
+}
 
 function collectStyle() {
   return {
-    port: parseInt($('#port').value, 10),
-    background: $('#background').value,
-    maxWidth: parseInt($('#maxWidth').value, 10),
-    align: $('#align').value
+    port: getCurrentPort(),
+    background: dom.background?.value || 'transparent',
+    maxWidth: parseInt(dom.maxWidth?.value, 10) || 1920,
+    align: dom.align?.value || 'center'
   };
 }
 
-const debounce = (fn, ms = 120) => { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; };
-
-const syncStyle = debounce(async () => {
-  const style = collectStyle();
+async function persistStyle(style) {
   await window.api.setConfig({ output: style });
-  window.api.notifyOverlay({ style });
-  overlaySync.connect(style.port);
-}, 120);
+}
 
-['background', 'align', 'maxWidth', 'port'].forEach(id => {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.addEventListener('change', syncStyle);
-  if (el.tagName === 'INPUT') el.addEventListener('input', syncStyle);
-});
+function debounce(fn, ms = 120) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
 
-$('#port').addEventListener('input', () => portView.textContent = $('#port').value);
+function updateDownloadedSelect(selectedFilename = state.activeDownloaded) {
+  const select = dom.downloadedSelect;
+  if (!select) return;
+  select.innerHTML = '';
+  if (!state.downloadedVideos.length) {
+    const option = new Option('（尚無下載影片）', '');
+    option.selected = true;
+    select.add(option);
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  const placeholder = new Option('選擇下載影片播放', '', !selectedFilename, !selectedFilename);
+  select.add(placeholder);
+  state.downloadedVideos
+    .slice()
+    .sort((a, b) => a.addedAt - b.addedAt)
+    .forEach(({ filename }) => {
+      const option = new Option(filename, filename, false, filename === selectedFilename);
+      select.add(option);
+    });
+  if (selectedFilename) {
+    select.value = selectedFilename;
+  }
+}
 
-$('#applyToOverlay').onclick = async () => {
-  const style = collectStyle();
-  await window.api.setConfig({ output: style });
-  window.api.notifyOverlay({ style, subContent: currentAssText, fontBuffers: currentFonts });
-  applyMsg.textContent = `已更新。請以 OBS Browser Source 指向 http://localhost:${style.port}/overlay`;
-};
-
-// 初始化
-(async () => {
-  const cfg = await window.api.getConfig();
-  $('#port').value = String(cfg.output.port);
-  portView.textContent = String(cfg.output.port);
-  overlaySync.connect(cfg.output.port);
-})();
+function createDownloadedSelect(rowEl) {
+  if (!rowEl) return null;
+  const select = document.createElement('select');
+  select.id = 'downloadedVideos';
+  select.style.marginLeft = '8px';
+  select.disabled = true;
+  rowEl.appendChild(select);
+  const hint = document.createElement('small');
+  hint.style.marginLeft = '8px';
+  hint.textContent = '（下載完成的影片會出現在此）';
+  rowEl.appendChild(hint);
+  return select;
+}
