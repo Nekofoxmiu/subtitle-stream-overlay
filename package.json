@@ -1,0 +1,20 @@
+{
+  "name": "subtitle-stream-overlay",
+  "version": "1.0.0",
+  "description": "ASS/SRT subtitle overlay (green/transparent) via Electron + SubtitlesOctopus",
+  "main": "src/main/main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "author": "Nekofoxball",
+  "license": "MIT",
+  "dependencies": {
+    "electron": "^38.1.2",
+    "electron-store": "^10.1.0",
+    "express": "^5.1.0",
+    "extract-zip": "^2.0.1",
+    "node-fetch": "^3.3.2",
+    "ws": "^8.18.3"
+  }
+}

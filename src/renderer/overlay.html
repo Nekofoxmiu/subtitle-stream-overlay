@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Overlay</title>
+<style>
+  html,body { height:100%; margin:0; background: transparent; }
+  body.gs-green { background:#00FF00; }
+  body.gs-transparent { background:transparent; } 
+  #wrap { position:fixed; inset:0; display:flex; align-items:flex-end; justify-content:center; }
+  canvas { display:block; }
+</style>
+<div id="wrap"><canvas id="overlay"></canvas></div>
+<script src="/assets/suboct/subtitles-octopus.js"></script>
+<script type="module" src="./overlay.mjs"></script>

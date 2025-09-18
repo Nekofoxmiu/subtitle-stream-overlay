@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <!-- 僅保留本地/HTTP 播放，移除 YouTube 來源 -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 img-src 'self' data:;
+                 style-src 'self' 'unsafe-inline';
+                 script-src 'self';
+                 connect-src 'self' ws://localhost:*;
+                 media-src 'self' blob:;
+                 frame-src 'none'">
+  <title>Subtitle Overlay</title>
+  <style>
+    body { font: 14px/1.5 system-ui, "Noto Sans TC", sans-serif; margin: 20px; }
+    fieldset{margin-bottom:16px}
+    label{display:inline-block; min-width:120px}
+    input[type=text]{width:520px}
+    .row{margin:6px 0}
+    .btn{padding:6px 12px}
+    .mono{font-family: ui-monospace, SFMono-Regular, Consolas, monospace}
+    #localVideo { width: 720px; height: 405px; background:#111; display:block; }
+    progress { width: 320px; vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <h2>Subtitle Overlay – 控制面板</h2>
+
+  <fieldset>
+    <legend>啟動檢查</legend>
+    <div class="row">
+      <button id="checkBins" class="btn">檢查/下載 yt-dlp / ffmpeg</button>
+      <span id="binInfo" class="mono"></span>
+    </div>
+  </fieldset>
+  <fieldset>
+  <legend>Cookies（Netscape cookies.txt）</legend>
+  <div class="row">
+    <button id="pickCookies" class="btn">選擇 cookies.txt</button>
+    <button id="clearCookies" class="btn">清除</button>
+    <span id="cookiesView" class="mono"></span>
+  </div>
+  <div class="row">
+    <small>若遇到 429 或需登入，請提供 cookies。如何匯出 YouTube cookies：<span class="mono">https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies</span></small>
+  </div>
+</fieldset>
+
+  <fieldset>
+    <legend>字幕來源</legend>
+    <div class="row">
+      <label>YouTube 連結：</label>
+      <input type="text" id="ytUrl" placeholder="https://www.youtube.com/watch?v=...">
+      <button id="ytDownload" class="btn">下載影片並播放</button>
+      <button id="ytCancel" class="btn">取消下載</button>
+      <button id="ytFetch" class="btn">僅下載字幕</button>
+      <progress id="dlProg" max="100" value="0" style="display:none"></progress>
+      <span id="dlTxt" class="mono"></span>
+    </div>
+    <div class="row">
+      <label>本地影片：</label>
+      <input type="file" id="videoFile" accept="video/*">
+    </div>
+    <div class="row">
+      <label>本地字幕：</label>
+      <button id="pickSubs" class="btn">選擇字幕檔</button>
+      <span id="subsPicked" class="mono"></span>
+    </div>
+    <div class="row"><small>若非 .ass 會自動轉成 .ass。</small></div>
+  </fieldset>
+  
+  <fieldset>
+    <legend>yt-dlp 日誌</legend>
+    <pre id="ytLog" style="background:#111; color:#0f0; height:200px; overflow:auto; white-space:pre-wrap"></pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>字型</legend>
+    <div class="row">
+      <label>上傳字型：</label>
+      <button id="pickFonts" class="btn">選擇 .ttf/.otf/.woff2</button>
+      <span id="fontsPicked" class="mono"></span>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>顯示樣式</legend>
+    <div class="row"><label>最大寬度(px)：</label><input type="number" id="maxWidth" value="1920"></div>
+    <div class="row"><label>對齊：</label>
+      <select id="align">
+        <option value="left">置左</option>
+        <option value="center" selected>置中</option>
+        <option value="right">置右</option>
+      </select>
+    </div>
+    <div class="row"><label>背景：</label>
+      <select id="background">
+        <option value="transparent" selected>透明</option>
+        <option value="green">綠幕</option>
+      </select>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>輸出（HTTP）</legend>
+    <div class="row">
+      <label>端口(port)：</label>
+      <input type="number" id="port" value="1976">
+      <span class="mono">  →  http://localhost:<span id="portView">1976</span>/overlay</span>
+    </div>
+    <div class="row">
+      <button id="applyToOverlay" class="btn">載入到輸出</button>
+      <span id="applyMsg"></span>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>影片播放（同步 overlay 時間軸）</legend>
+    <video id="localVideo" controls></video>
+    <div class="row">
+      <button id="playBtn" class="btn">播放</button>
+      <button id="pauseBtn" class="btn">暫停</button>
+      <button id="seekBack5" class="btn">⟲ -5s</button>
+      <button id="seekFwd5" class="btn">⟳ +5s</button>
+    </div>
+  </fieldset>
+
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>
