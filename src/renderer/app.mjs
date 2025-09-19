@@ -4,9 +4,8 @@ const dom = {
   binInfo: $('#binInfo'),
   mainArea: document.querySelector('.main-area'),
   controlCard: $('#controlCard'),
-  previewCard: $('#previewCard'),
   controlToggle: $('#controlCardToggle'),
-  previewToggle: $('#previewCardToggle'),
+  controlRestore: $('#controlCardRestore'),
   portInput: $('#port'),
   portView: $('#portView'),
   applyMsg: $('#applyMsg'),
@@ -68,8 +67,7 @@ const state = {
   subsSearch: '',
   objectUrl: '',
   binProgress: new Map(),
-  controlCollapsed: false,
-  previewCollapsed: false
+  controlCollapsed: false
 };
 
 /* ---------------- Overlay 時間同步 ---------------- */
@@ -110,7 +108,6 @@ const overlaySync = new OverlaySync(dom.video);
 (async function init() {
   setupEventHandlers();
   applyControlVisibility();
-  applyPreviewVisibility();
   await loadInitialConfig();
   await loadBinInfo();
   await refreshCachedEntries();
@@ -200,12 +197,9 @@ function setupEventHandlers() {
       dom.controlToggle?.focus();
     }
   });
-  dom.previewToggle?.addEventListener('click', () => {
-    const nextCollapsed = !state.previewCollapsed;
-    setPreviewCollapsed(nextCollapsed);
-    if (!nextCollapsed) {
-      dom.previewToggle?.focus();
-    }
+  dom.controlRestore?.addEventListener('click', () => {
+    setControlCollapsed(false);
+    dom.controlToggle?.focus();
   });
 
   ['background', 'align', 'maxWidth', 'port'].forEach((id) => {
@@ -239,39 +233,28 @@ function setControlCollapsed(collapsed) {
   applyControlVisibility();
 }
 
-function setPreviewCollapsed(collapsed) {
-  state.previewCollapsed = Boolean(collapsed);
-  applyPreviewVisibility();
-}
-
 function applyControlVisibility() {
   const collapsed = state.controlCollapsed;
   const toggle = dom.controlToggle;
   const minimizeLabel = toggle?.dataset?.labelMinimize || '最小化控制區';
   const restoreLabel = toggle?.dataset?.labelRestore || '顯示控制區';
-  dom.controlCard?.classList.toggle('card-collapsed', collapsed);
+  if (dom.controlCard) {
+    dom.controlCard.classList.toggle('card-collapsed', collapsed);
+    dom.controlCard.style.display = collapsed ? 'none' : '';
+  }
   dom.mainArea?.classList.toggle('controls-collapsed', collapsed);
+  if (dom.controlRestore) {
+    dom.controlRestore.textContent = restoreLabel;
+    dom.controlRestore.setAttribute('aria-label', restoreLabel);
+    dom.controlRestore.setAttribute('aria-controls', 'controlCard');
+    dom.controlRestore.classList.toggle('visible', collapsed);
+    dom.controlRestore.setAttribute('aria-hidden', collapsed ? 'false' : 'true');
+  }
   if (toggle) {
     const label = collapsed ? restoreLabel : minimizeLabel;
     toggle.textContent = label;
     toggle.setAttribute('aria-label', label);
     toggle.setAttribute('aria-controls', 'controlCard');
-    toggle.setAttribute('aria-expanded', String(!collapsed));
-  }
-}
-
-function applyPreviewVisibility() {
-  const collapsed = state.previewCollapsed;
-  const toggle = dom.previewToggle;
-  const minimizeLabel = toggle?.dataset?.labelMinimize || '最小化預覽與輸出';
-  const restoreLabel = toggle?.dataset?.labelRestore || '顯示預覽與輸出';
-  dom.previewCard?.classList.toggle('card-collapsed', collapsed);
-  dom.mainArea?.classList.toggle('preview-collapsed', collapsed);
-  if (toggle) {
-    const label = collapsed ? restoreLabel : minimizeLabel;
-    toggle.textContent = label;
-    toggle.setAttribute('aria-label', label);
-    toggle.setAttribute('aria-controls', 'previewCard');
     toggle.setAttribute('aria-expanded', String(!collapsed));
   }
 }
