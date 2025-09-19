@@ -122,6 +122,35 @@ class OverlaySync {
 
 const overlaySync = new OverlaySync(dom.video);
 
+function normalizeFontBuffer(font) {
+  if (!font || typeof font !== 'object') return null;
+  const normalized = {};
+  if (typeof font.name === 'string' && font.name) normalized.name = font.name;
+  if (typeof font.data === 'string' && font.data) normalized.data = font.data;
+  if (typeof font.url === 'string' && font.url) normalized.url = font.url;
+  return normalized.data || normalized.url ? normalized : null;
+}
+
+function describeFontName(font) {
+  if (!font || typeof font !== 'object') return '';
+  if (typeof font.name === 'string' && font.name) return font.name;
+  if (typeof font.url === 'string' && font.url) {
+    const parts = font.url.split(/[\\/]/);
+    return parts[parts.length - 1] || font.url;
+  }
+  return '';
+}
+
+function updateFontsLabel(fonts = state.currentFonts) {
+  if (!dom.fontsPicked) return;
+  const names = [];
+  for (const font of fonts || []) {
+    const label = describeFontName(font);
+    if (label) names.push(label);
+  }
+  dom.fontsPicked.textContent = names.join(', ');
+}
+
 /* ---------------- 初始化 ---------------- */
 (async function init() {
   setupEventHandlers();
@@ -136,6 +165,9 @@ const overlaySync = new OverlaySync(dom.video);
 
 async function loadInitialConfig() {
   const cfg = await window.api.getConfig();
+  const storedFonts = Array.isArray(cfg?.fonts) ? cfg.fonts.map(normalizeFontBuffer).filter(Boolean) : [];
+  state.currentFonts = storedFonts;
+  updateFontsLabel(storedFonts);
   if (cfg?.output) {
     const { output } = cfg;
     if (output.port != null) dom.portInput.value = String(output.port);
@@ -149,6 +181,8 @@ async function loadInitialConfig() {
   if (dom.video) dom.video.volume = initialVolume;
   dom.portView.textContent = dom.portInput.value || '';
   dom.cookiesView.textContent = cfg?.cookiesPath ? cfg.cookiesPath : '(未設定)';
+  const style = collectStyle();
+  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
   overlaySync.connect(getCurrentPort());
 }
 
@@ -994,15 +1028,14 @@ async function handlePickFonts() {
   const files = await window.api.openFiles({ filters: [{ name: 'Fonts', extensions: ['ttf', 'otf', 'woff2', 'woff'] }] });
   if (!files.length) return;
   state.currentFonts = [];
-  const names = [];
   for (const filePath of files) {
     const base64 = await window.api.readBinaryBase64(filePath);
     const name = filePath.split(/[\\/]/).pop();
     state.currentFonts.push({ name, data: base64 });
-    names.push(name);
   }
-  dom.fontsPicked.textContent = names.join(', ');
+  updateFontsLabel();
   const style = collectStyle();
+  await persistFonts(state.currentFonts);
   await persistStyle(style);
   window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
 }
@@ -1178,6 +1211,10 @@ function collectStyle() {
 
 async function persistStyle(style) {
   await window.api.setConfig({ output: style });
+}
+
+async function persistFonts(fonts) {
+  await window.api.setConfig({ fonts });
 }
 
 function debounce(fn, ms = 120) {
