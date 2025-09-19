@@ -93,6 +93,27 @@ export class OverlayServer {
       this.server.on('error', reject);
     });
   }
-
-  close() { this.server.close(); }
+  close() {
+    // Ensure WebSocketServer is closed and return a promise that resolves
+    // once the underlying HTTP server is closed.
+    return new Promise((resolve) => {
+      try {
+        if (this.wss) {
+          try { this.wss.close(); } catch (err) { /* swallow */ }
+        }
+      } catch (err) { /* noop */ }
+      try {
+        if (this.server && this.server.close) {
+          this.server.close(() => resolve());
+          // In case of error during close, resolve anyway after a short timeout
+          this.server.on('error', () => setTimeout(resolve, 10));
+        } else {
+          resolve();
+        }
+      } catch (err) {
+        // If close throws, resolve to avoid blocking shutdown
+        resolve();
+      }
+    });
+  }
 }

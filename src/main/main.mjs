@@ -23,6 +23,8 @@ if (isSquirrelEvent) {
 let mainWindow;
 let overlayServer;
 
+let currentOverlayPort = null;
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -51,7 +53,35 @@ app.whenReady().then(async () => {
       assetsDir: ASSETS_DIR,
       userDataPath: app.getPath('userData')
     });
-    await overlayServer.listen(output.port);
+    currentOverlayPort = output?.port ?? 59777;
+    await overlayServer.listen(currentOverlayPort);
+  }
+});
+
+// Restart overlay server when config output.port changes.
+app.on('config:changed', async (newConfig) => {
+  try {
+    const newPort = newConfig?.output?.port ?? 59777;
+    if (Number(newPort) === Number(currentOverlayPort)) return;
+    // Close existing server if any
+    if (overlayServer) {
+      try {
+        await overlayServer.close();
+      } catch (err) { /* swallow */ }
+      overlayServer = null;
+    }
+    // Create a new overlay server and listen
+    const srv = new OverlayServer({ rendererDir: RENDERER_DIR, assetsDir: ASSETS_DIR, userDataPath: app.getPath('userData') });
+    overlayServer = srv;
+    currentOverlayPort = newPort;
+    try {
+      await overlayServer.listen(currentOverlayPort);
+      console.log('[main] overlayServer restarted on port', currentOverlayPort);
+    } catch (err) {
+      console.error('[main] failed to restart overlayServer:', err);
+    }
+  } catch (err) {
+    console.error('[main] config:changed handler error', err);
   }
 });
 
