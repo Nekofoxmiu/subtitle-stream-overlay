@@ -1,4 +1,5 @@
 import { app, BrowserWindow } from 'electron';
+import electronSquirrelStartup from 'electron-squirrel-startup';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setupIpc } from './ipc.mjs';
@@ -13,6 +14,11 @@ const SRC_DIR        = path.join(PROJECT_ROOT, 'src');               // <repo>/s
 const RENDERER_DIR   = path.join(SRC_DIR, 'renderer');               // <repo>/src/renderer
 const PRELOAD_PATH   = path.join(SRC_DIR, 'preload.cjs');             // <repo>/src/preload.mjs
 const ASSETS_DIR     = path.join(PROJECT_ROOT, 'assets');            // <repo>/assets
+
+const isSquirrelEvent = electronSquirrelStartup;
+if (isSquirrelEvent) {
+  app.quit();
+}
 
 let mainWindow;
 let overlayServer;
@@ -33,18 +39,20 @@ function createMainWindow() {
 }
 
 app.whenReady().then(async () => {
-  createMainWindow();
-  setupIpc(mainWindow);
+  if (!isSquirrelEvent) {
+    createMainWindow();
+    setupIpc(mainWindow);
 
-  try { await checkAndOfferDownload(mainWindow); } catch {}
+    try { await checkAndOfferDownload(mainWindow); } catch {}
 
-  const { output } = getConfig();
-  overlayServer = new OverlayServer({
-    rendererDir: RENDERER_DIR,
-    assetsDir: ASSETS_DIR,
-    userDataPath: app.getPath('userData')
-  });
-  await overlayServer.listen(output.port);
+    const { output } = getConfig();
+    overlayServer = new OverlayServer({
+      rendererDir: RENDERER_DIR,
+      assetsDir: ASSETS_DIR,
+      userDataPath: app.getPath('userData')
+    });
+    await overlayServer.listen(output.port);
+  }
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
