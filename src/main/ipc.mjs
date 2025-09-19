@@ -453,21 +453,6 @@ function run(cmd, args, opts = {}) {
   });
 }
 
-function pickSubtitleCandidate(info) {
-  if (!info) {
-    return { lang: null, useAuto: false, manual: [], auto: [] };
-  }
-  const manual = sortSubtitleLangs(info?.subtitles ? Object.keys(info.subtitles) : []);
-  const auto = sortSubtitleLangs(info?.automatic_captions ? Object.keys(info.automatic_captions) : []);
-  if (manual.length) {
-    return { lang: manual[0], useAuto: false, manual, auto };
-  }
-  if (auto.length) {
-    return { lang: auto[0], useAuto: true, manual, auto };
-  }
-  return { lang: null, useAuto: false, manual, auto };
-}
-
 async function fetchVideoInfo(ytDlpPath, url, cookiesArgs = []) {
   try {
     const probeArgs = [...cookiesArgs, '--no-playlist', '-J', url];
@@ -481,6 +466,77 @@ async function fetchVideoInfo(ytDlpPath, url, cookiesArgs = []) {
     console.warn('[ytdlp] 無法取得影片資訊', err);
     return null;
   }
+}
+
+async function promptSubtitleLanguage(event, {
+  url,
+  videoInfo,
+  cookiesArgs = []
+} = {}) {
+  const ownerWindow = event?.sender?.getOwnerBrowserWindow?.() || null;
+  const { ytDlpPath } = getBinPaths();
+  const info = videoInfo || await fetchVideoInfo(ytDlpPath, url, cookiesArgs);
+  const manual = sortSubtitleLangs(info?.subtitles ? Object.keys(info.subtitles) : []);
+  const auto = sortSubtitleLangs(info?.automatic_captions ? Object.keys(info.automatic_captions) : []);
+
+  if (!manual.length && !auto.length) {
+    if (ownerWindow) {
+      await dialog.showMessageBox(ownerWindow, {
+        type: 'info',
+        buttons: ['確定'],
+        title: '沒有可用字幕',
+        message: '此影片沒有可用字幕（含自動字幕）。'
+      });
+    }
+    return { lang: null, useAuto: false, info, reason: 'none' };
+  }
+
+  const limitList = (arr) => arr.slice(0, 12);
+  let useAuto = false;
+  let candidates = manual;
+
+  if (!manual.length) {
+    if (ownerWindow) {
+      const confirm = await dialog.showMessageBox(ownerWindow, {
+        type: 'warning',
+        buttons: ['使用自動字幕', '取消'],
+        defaultId: 0,
+        cancelId: 1,
+        title: '沒有人工字幕',
+        message: '此影片沒有人工字幕。',
+        detail: '僅提供自動產生字幕（辨識品質可能較差）。是否改為下載自動字幕？'
+      });
+      if (confirm.response !== 0) {
+        return { lang: null, useAuto: false, info, reason: 'cancelled' };
+      }
+    }
+    useAuto = true;
+    candidates = auto;
+  }
+
+  const options = limitList(candidates);
+  if (!options.length) {
+    return { lang: null, useAuto: false, info, reason: 'none' };
+  }
+
+  if (!ownerWindow) {
+    return { lang: options[0], useAuto, info };
+  }
+
+  const result = await dialog.showMessageBox(ownerWindow, {
+    type: 'question',
+    buttons: options,
+    cancelId: -1,
+    title: '選擇字幕語言',
+    message: useAuto ? '請選擇自動字幕語言：' : '請選擇字幕語言：',
+    detail: options.join('  ')
+  });
+
+  if (result.response < 0) {
+    return { lang: null, useAuto: false, info, reason: 'cancelled' };
+  }
+
+  return { lang: options[result.response], useAuto, info };
 }
 
 async function downloadSubsForEntry({
@@ -623,7 +679,17 @@ async function startYtDlpJob(event, {
     if (typeof videoInfo.id === 'string') videoId = videoInfo.id;
     if (typeof videoInfo.title === 'string') videoTitle = videoInfo.title;
   }
-  const subtitlePlan = pickSubtitleCandidate(videoInfo);
+  let subtitleChoice = null;
+  let subtitlePlan = null;
+  try {
+    subtitleChoice = await promptSubtitleLanguage(event, { url, videoInfo, cookiesArgs });
+    if (subtitleChoice?.info) videoInfo = subtitleChoice.info;
+    if (subtitleChoice?.lang) {
+      subtitlePlan = { lang: subtitleChoice.lang, useAuto: Boolean(subtitleChoice.useAuto) };
+    }
+  } catch (err) {
+    console.warn('[ytdlp] 無法詢問字幕語言', err);
+  }
   const modeArgs = mode === 'audio'
     ? ['-f', formatSel, '--extract-audio', '--audio-quality', '0', ...(audioFmt ? ['--audio-format', audioFmt] : [])]
     : ['-f', formatSel, '--merge-output-format', mergeFmt];
@@ -785,6 +851,10 @@ async function startYtDlpJob(event, {
           } catch (err) {
             send({ jobId, type: 'log', stream: 'stderr', line: `[subs] 自動下載字幕失敗：${err?.message || err}` });
           }
+        } else if (subtitleChoice?.reason === 'none') {
+          send({ jobId, type: 'log', stream: 'stderr', line: '[subs] 此影片沒有可用字幕，略過下載字幕' });
+        } else if (subtitleChoice?.reason === 'cancelled') {
+          send({ jobId, type: 'log', stream: 'stdout', line: '[subs] 使用者未選擇字幕語言，略過下載字幕' });
         }
         send({ jobId, type: 'done', filename: normalizedName, entry, mode });
       } else {
@@ -977,55 +1047,16 @@ export function setupIpc(mainWindow) {
     // 1) 若未指定語言 → 先探測可用字幕並以彈窗請使用者選擇
     let videoInfo = null;
     let selectedLangs = langs;
-    let useAuto = false; // 新增：標記是否使用自動字幕
+    let useAuto = false; // 標記是否使用自動字幕
     if (!selectedLangs) {
-      videoInfo = await fetchVideoInfo(ytDlpPath, url, cookiesArgs);
-      const manual = sortSubtitleLangs(videoInfo?.subtitles ? Object.keys(videoInfo.subtitles) : []);
-      const auto = sortSubtitleLangs(videoInfo?.automatic_captions ? Object.keys(videoInfo.automatic_captions) : []);
-
-      // 無任何字幕
-      if (manual.length === 0 && auto.length === 0) {
-        await dialog.showMessageBox(event.sender.getOwnerBrowserWindow(), {
-          type: 'info',
-          buttons: ['確定'],
-          title: '沒有可用字幕',
-          message: '此影片沒有可用字幕（含自動字幕）。'
-        });
-        throw new Error('此影片沒有可用字幕');
+      const choice = await promptSubtitleLanguage(event, { url, cookiesArgs });
+      videoInfo = choice?.info || null;
+      if (!choice?.lang) {
+        if (choice?.reason === 'none') throw new Error('此影片沒有可用字幕');
+        throw new Error('使用者取消選擇字幕語言');
       }
-
-      const limitList = (arr) => arr.slice(0, 12);
-
-      let candidates = [];
-      if (manual.length > 0) {
-        // 僅列出人工字幕（避免把所有自動語言列出）
-        candidates = limitList(manual);
-      } else {
-        // 沒有人工字幕 → 先詢問是否改抓自動字幕
-        const confirm = await dialog.showMessageBox(event.sender.getOwnerBrowserWindow(), {
-          type: 'warning',
-          buttons: ['使用自動字幕', '取消'],
-          defaultId: 0,
-          cancelId: 1,
-          title: '沒有人工字幕',
-          message: '此影片沒有人工字幕。',
-          detail: '僅提供自動產生字幕（辨識品質可能較差）。是否改為下載自動字幕？'
-        });
-        if (confirm.response !== 0) throw new Error('使用者取消選擇字幕語言');
-        useAuto = true;
-        candidates = limitList(auto);
-      }
-
-      const r = await dialog.showMessageBox(event.sender.getOwnerBrowserWindow(), {
-        type: 'question',
-        buttons: candidates,
-        cancelId: -1,
-        title: '選擇字幕語言',
-        message: useAuto ? '請選擇自動字幕語言：' : '請選擇字幕語言：',
-        detail: candidates.join('  ')
-      });
-      if (r.response < 0) throw new Error('使用者取消選擇字幕語言');
-      selectedLangs = candidates[r.response];
+      selectedLangs = choice.lang;
+      useAuto = Boolean(choice.useAuto);
     }
 
     // 2) 建構 yt-dlp 下載字幕參數（人工 vs 自動分流）

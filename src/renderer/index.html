@@ -277,8 +277,14 @@
       grid-template-columns: 1fr;
     }
 
-    .main-area.preview-collapsed {
-      grid-template-columns: minmax(0, 1fr);
+    .collapse-placeholder {
+      display: none;
+      justify-self: start;
+      margin: 0 32px;
+    }
+
+    .collapse-placeholder.visible {
+      display: inline-flex;
     }
 
     .card {
@@ -704,8 +710,8 @@
         grid-template-columns: 1fr;
       }
 
-      .main-area.preview-collapsed {
-        grid-template-columns: 1fr;
+      .collapse-placeholder {
+        margin: 0;
       }
     }
 
@@ -787,6 +793,7 @@
     </header>
 
     <main class="main-area">
+      <button id="controlCardRestore" class="btn ghost small collapse-placeholder" type="button" aria-hidden="true">顯示控制區</button>
       <section id="controlCard" class="card quick-card">
         <header class="card-header">
           <div class="card-header-text">
@@ -836,10 +843,6 @@
           <div class="card-header-text">
             <h2>預覽與輸出</h2>
             <p>確認字幕同步後，將設定套用到 overlay。</p>
-          </div>
-          <div class="card-header-actions">
-            <button id="previewCardToggle" class="btn ghost small" type="button"
-              data-label-minimize="最小化預覽與輸出" data-label-restore="顯示預覽與輸出">最小化預覽與輸出</button>
           </div>
         </header>
         <div class="card-body">
