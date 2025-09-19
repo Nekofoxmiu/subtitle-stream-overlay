@@ -1,5 +1,5 @@
 import { app, ipcMain, dialog } from 'electron';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { checkAndOfferDownload, getBinPaths } from './binManager.mjs';
@@ -66,7 +66,8 @@ async function ingestFileIntoCache(sourcePath, {
   id,
   fallbackPrefix = 'entry',
   defaultExt = '',
-  move = false
+  move = false,
+  preserveBasename = false
 } = {}) {
   if (!sourcePath) throw new Error('sourcePath is required');
   if (!dir) throw new Error('target dir is required');
@@ -78,26 +79,63 @@ async function ingestFileIntoCache(sourcePath, {
   if (!ext && defaultExt) {
     ext = defaultExt.startsWith('.') ? defaultExt : `.${defaultExt}`;
   }
-  const base = buildCacheBasename({ title, id, fallbackPrefix });
-  const { filename, filePath } = await ensureUniqueFilename(dir, base, ext, move ? resolvedSource : null);
-  if (path.resolve(resolvedSource) === filePath) {
-    return { filename, filePath };
+  const baseCandidates = [];
+  const seen = new Set();
+  const addCandidate = (baseName, baseExt) => {
+    if (!baseName) return;
+    const extVal = baseExt || '';
+    const key = `${baseName}|${extVal}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    baseCandidates.push({ base: baseName, ext: extVal });
+  };
+
+  if (preserveBasename) {
+    const parsed = path.parse(resolvedSource);
+    const originalBase = parsed.name || parsed.base;
+    const originalExt = parsed.ext || ext;
+    addCandidate(originalBase, originalExt);
   }
-  if (move) {
-    try {
-      await fs.rename(resolvedSource, filePath);
-    } catch (err) {
+
+  const fallbackBase = buildCacheBasename({ title, id, fallbackPrefix });
+  addCandidate(fallbackBase, ext);
+
+  let lastError = null;
+  for (const { base: candidateBase, ext: candidateExt } of baseCandidates) {
+    const { filename, filePath } = await ensureUniqueFilename(dir, candidateBase, candidateExt, move ? resolvedSource : null);
+    if (path.resolve(resolvedSource) === filePath) {
+      return { filename, filePath };
+    }
+
+    let opError = null;
+    if (move) {
+      try {
+        await fs.rename(resolvedSource, filePath);
+      } catch (err) {
+        try {
+          await fs.copyFile(resolvedSource, filePath);
+          await fs.unlink(resolvedSource).catch(() => { });
+        } catch (copyErr) {
+          opError = copyErr instanceof Error ? copyErr : err;
+        }
+      }
+    } else {
       try {
         await fs.copyFile(resolvedSource, filePath);
-        await fs.unlink(resolvedSource).catch(() => { });
-      } catch (copyErr) {
-        throw copyErr instanceof Error ? copyErr : err;
+      } catch (err) {
+        opError = err instanceof Error ? err : new Error(String(err));
       }
     }
-  } else {
-    await fs.copyFile(resolvedSource, filePath);
+
+    if (!opError) {
+      return { filename, filePath };
+    }
+
+    lastError = opError;
   }
-  return { filename, filePath };
+
+  if (lastError) throw lastError;
+  throw new Error('無法匯入檔案');
 }
 
 function generateEntryId(prefix = 'entry') {
@@ -230,7 +268,8 @@ async function registerVideoDownload({ id, title, filename, sourcePath, keepSour
       title,
       id,
       fallbackPrefix: 'video',
-      move: !keepSource
+      move: !keepSource,
+      preserveBasename: keepSource
     });
     finalFilename = storedName;
   } else if (filename) {
@@ -263,7 +302,8 @@ async function registerSubtitleDownload({ id, title, sourcePath, keepSource = fa
     id,
     fallbackPrefix: 'subtitle',
     defaultExt: '.ass',
-    move
+    move,
+    preserveBasename: keepSource
   });
   const patch = { subsFilename: storedName };
   if (id) patch.id = id;
@@ -273,11 +313,16 @@ async function registerSubtitleDownload({ id, title, sourcePath, keepSource = fa
 
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { windowsHide: true, ...opts });
-    let out = '', err = '';
-    p.stdout.on('data', d => out += d.toString());
-    p.stderr.on('data', d => err += d.toString());
-    p.on('close', code => code === 0 ? resolve({ code, out, err }) : reject(new Error(err || `exit ${code}`)));
+    execFile(cmd, args, { windowsHide: true, encoding: 'utf8', maxBuffer: 1024 * 1024 * 16, ...opts }, (error, stdout, stderr) => {
+      if (error) {
+        const message = typeof error === 'object' && error !== null && 'message' in error
+          ? error.message
+          : String(error);
+        reject(new Error(stderr || stdout || message));
+        return;
+      }
+      resolve({ code: 0, out: stdout ?? '', err: stderr ?? '' });
+    });
   });
 }
 
@@ -471,15 +516,16 @@ export function setupIpc(mainWindow) {
     const videoBaseTitle = normalize(videoTitle) || (videoPathStr ? path.parse(videoPathStr).name : '');
     const subsBaseTitle = normalize(subsTitle) || (subsPathStr ? path.parse(subsPathStr).name : '');
 
-    const existingRaw = id ? readDownloadStore().find((item) => item?.id === id) : null;
-    let entryId = id || existingRaw?.id || generateEntryId('local');
-    let effectiveTitle = normalize(existingRaw?.title) || baseTitle || videoBaseTitle || subsBaseTitle;
-    let entry = null;
+  const existingRaw = id ? readDownloadStore().find((item) => item?.id === id) : null;
+  let entryId = id || existingRaw?.id || generateEntryId('local');
+  let effectiveTitle = normalize(existingRaw?.title) || baseTitle || videoBaseTitle || subsBaseTitle;
+  let entry = null;
+  const decoupleSubs = !id && Boolean(videoPathStr && subsPathStr);
 
-    if (videoPathStr) {
-      const titleForVideo = effectiveTitle || videoBaseTitle || subsBaseTitle;
-      try {
-        entry = await registerVideoDownload({
+  if (videoPathStr) {
+    const titleForVideo = effectiveTitle || videoBaseTitle || subsBaseTitle;
+    try {
+      entry = await registerVideoDownload({
           id: entryId,
           title: titleForVideo || undefined,
           sourcePath: videoPathStr,
@@ -492,21 +538,22 @@ export function setupIpc(mainWindow) {
       }
     }
 
-    if (subsPathStr) {
-      const titleForSubs = effectiveTitle || subsBaseTitle || videoBaseTitle;
-      try {
-        entry = await registerSubtitleDownload({
-          id: entryId,
-          title: titleForSubs || undefined,
-          sourcePath: subsPathStr,
-          keepSource: true
-        });
-        if (entry?.id) entryId = entry.id;
-        if (entry?.title) effectiveTitle = entry.title;
-      } catch (err) {
-        throw new Error(`匯入字幕失敗：${err?.message || err}`);
-      }
+  if (subsPathStr) {
+    const titleForSubs = effectiveTitle || subsBaseTitle || videoBaseTitle;
+    const subsEntryId = decoupleSubs ? generateEntryId('local_sub') : entryId;
+    try {
+      entry = await registerSubtitleDownload({
+        id: subsEntryId,
+        title: titleForSubs || undefined,
+        sourcePath: subsPathStr,
+        keepSource: true
+      });
+      if (!decoupleSubs && entry?.id) entryId = entry.id;
+      if (entry?.title) effectiveTitle = entry.title;
+    } catch (err) {
+      throw new Error(`匯入字幕失敗：${err?.message || err}`);
     }
+  }
 
     if (!entry && existingRaw) {
       entry = await buildDownloadEntry(existingRaw);

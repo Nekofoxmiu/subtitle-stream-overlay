@@ -30,7 +30,21 @@ const dom = {
   activeCacheInfo: $('#activeCacheInfo')
 };
 
-dom.downloadedSelect = createDownloadedSelect(dom.videoFile?.closest('.row'));
+const videoCacheControls = createCacheSelector(dom.videoFile?.closest('.row'), {
+  label: '快取媒體：',
+  searchPlaceholder: '搜尋影片或音訊...',
+  hint: '（快取的影片 / 音訊會列在此，可搜尋）'
+});
+dom.videoCacheSelect = videoCacheControls?.select || null;
+dom.videoCacheSearch = videoCacheControls?.search || null;
+
+const subsCacheControls = createCacheSelector(dom.pickSubs?.closest('.row'), {
+  label: '快取字幕：',
+  searchPlaceholder: '搜尋字幕...',
+  hint: '（快取的字幕會列在此，可搜尋）'
+});
+dom.subsCacheSelect = subsCacheControls?.select || null;
+dom.subsCacheSearch = subsCacheControls?.search || null;
 
 const state = {
   currentAssText: '',
@@ -38,7 +52,10 @@ const state = {
   jobId: null,
   activeDownloadMode: null,
   cachedEntries: [], // { id, title, videoFilename, subsFilename, ... }
-  activeCacheId: '',
+  activeVideoId: '',
+  activeSubsId: '',
+  videoSearch: '',
+  subsSearch: '',
   objectUrl: ''
 };
 
@@ -99,21 +116,18 @@ async function loadInitialConfig() {
 }
 
 
-async function refreshCachedEntries(activeId = state.activeCacheId) {
+async function refreshCachedEntries({ activeVideoId = state.activeVideoId, activeSubsId = state.activeSubsId } = {}) {
   try {
     const entries = await window.api.listCacheEntries();
     state.cachedEntries = Array.isArray(entries) ? entries.slice() : [];
     state.cachedEntries.sort((a, b) => (a?.addedAt || 0) - (b?.addedAt || 0));
-    updateDownloadedSelect(activeId);
-    if (activeId) {
-      const current = state.cachedEntries.find((item) => item.id === activeId);
-      if (!current && state.activeCacheId === activeId) {
-        state.activeCacheId = '';
-      }
-      updateActiveCacheInfo(current || null);
-    } else {
-      updateActiveCacheInfo(null);
-    }
+    const videoEntry = state.cachedEntries.find((item) => item.id === activeVideoId && item.hasVideo && item.videoFilename);
+    const subsEntry = state.cachedEntries.find((item) => item.id === activeSubsId && item.hasSubs && item.subsPath);
+    state.activeVideoId = videoEntry ? videoEntry.id : '';
+    state.activeSubsId = subsEntry ? subsEntry.id : '';
+    updateVideoCacheSelect(state.activeVideoId);
+    updateSubsCacheSelect(state.activeSubsId);
+    updateActiveCacheInfo({ video: videoEntry || null, subs: subsEntry || null });
   } catch (err) {
     console.error('[cache] 無法載入快取清單', err);
   }
@@ -128,7 +142,7 @@ function setupEventHandlers() {
     await persistStyle(style);
     window.api.notifyOverlay({ style });
     syncOverlayConnection();
-    const activeEntry = state.cachedEntries.find((item) => item.id === state.activeCacheId && item.hasVideo && item.videoFilename);
+    const activeEntry = state.cachedEntries.find((item) => item.id === state.activeVideoId && item.hasVideo && item.videoFilename);
     if (!activeEntry) return;
     // 重新設定下載影片的連線位置
     const url = buildCacheUrl(activeEntry.videoFilename);
@@ -144,7 +158,10 @@ function setupEventHandlers() {
   dom.ytDownloadAudio?.addEventListener('click', handleDownloadAudio);
   dom.ytCancel?.addEventListener('click', handleCancelDownload);
   dom.videoFile?.addEventListener('change', handleLocalFileSelected);
-  dom.downloadedSelect?.addEventListener('change', handleDownloadedSelectChange);
+  dom.videoCacheSelect?.addEventListener('change', handleVideoCacheSelectChange);
+  dom.subsCacheSelect?.addEventListener('change', handleSubsCacheSelectChange);
+  dom.videoCacheSearch?.addEventListener('input', handleVideoCacheSearch);
+  dom.subsCacheSearch?.addEventListener('input', handleSubsCacheSearch);
 
   ['background', 'align', 'maxWidth', 'port'].forEach((id) => {
     const el = document.getElementById(id);
@@ -289,14 +306,23 @@ function handleDownloadDone(payload) {
   if (filename) {
     appendLog(`[done:${label}] ${filename}`);
   } else if (entry) {
-    appendLog(`[done:${label}] ${describeCacheEntry(entry)}`);
+    const summary = entry.hasVideo
+      ? describeVideoEntry(entry)
+      : entry.hasSubs
+        ? describeSubtitleEntry(entry)
+        : (entry.title || entry.displayTitle || entry.id || '');
+    appendLog(`[done:${label}] ${summary}`);
   }
   if (entry) {
     const merged = upsertCacheEntry(entry);
-    updateDownloadedSelect(merged?.id);
-    activateCacheEntry(merged, { setSelectValue: true }).catch((err) => {
-      console.error('[cache] 無法啟用快取影片', err);
-    });
+    if (merged?.hasVideo && merged.videoFilename) {
+      state.activeVideoId = merged.id;
+      updateVideoCacheSelect(merged.id);
+      loadVideoEntry(merged);
+    } else {
+      updateVideoCacheSelect(state.activeVideoId);
+    }
+    updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: getEntryById(state.activeSubsId) });
   } else {
     refreshCachedEntries().catch((err) => console.error('[cache] 重新整理快取失敗', err));
   }
@@ -321,71 +347,175 @@ function upsertCacheEntry(entry) {
   return merged;
 }
 
-function formatCacheEntryLabel(entry) {
+function describeVideoEntry(entry) {
   if (!entry) return '';
   const base = entry.title || entry.displayTitle || entry.id || '';
-  const kinds = [];
-  if (entry.hasVideo) kinds.push(entry.mediaKind === 'audio' ? '音訊' : '影片');
-  if (entry.hasSubs) kinds.push('字幕');
-  return kinds.length ? `${base}（${kinds.join(' + ')}）` : base;
+  const markers = [entry.mediaKind === 'audio' ? '音訊' : '影片'];
+  if (entry.hasSubs) markers.push('含字幕');
+  return markers.length ? `${base}（${markers.join(' / ')}）` : base;
 }
 
-function describeCacheEntry(entry) {
+function describeSubtitleEntry(entry) {
   if (!entry) return '';
   const base = entry.title || entry.displayTitle || entry.id || '';
-  const kinds = [];
-  if (entry.hasVideo) kinds.push(entry.mediaKind === 'audio' ? '音訊' : '影片');
-  if (entry.hasSubs) kinds.push('字幕');
-  const suffix = kinds.length ? `（${kinds.join(' + ')}）` : '';
-  return `${base}${suffix}`.trim();
+  const markers = ['字幕'];
+  if (entry.hasVideo) markers.push(entry.mediaKind === 'audio' ? '含音訊' : '含影片');
+  return `${base}（${markers.join(' / ')}）`;
 }
 
-async function activateCacheEntry(entry, { setSelectValue = true } = {}) {
-  if (!entry) {
-    state.activeCacheId = '';
-    if (setSelectValue && dom.downloadedSelect) {
-      dom.downloadedSelect.value = '';
-    }
-    updateActiveCacheInfo(null);
+function matchesEntrySearch(entry, term) {
+  if (!term) return true;
+  const haystack = [
+    entry.title,
+    entry.displayTitle,
+    entry.id,
+    entry.videoFilename,
+    entry.subsFilename,
+    entry.videoPath,
+    entry.subsPath
+  ].filter(Boolean).join(' ').toLowerCase();
+  return haystack.includes(term);
+}
+
+function formatVideoOptionLabel(entry) {
+  if (!entry) return '';
+  const base = entry.title || entry.displayTitle || entry.id || '';
+  const markers = [entry.mediaKind === 'audio' ? '音訊' : '影片'];
+  if (entry.hasSubs) markers.push('含字幕');
+  return markers.length ? `${base}（${markers.join(' / ')}）` : base;
+}
+
+function formatSubtitleOptionLabel(entry) {
+  if (!entry) return '';
+  const base = entry.title || entry.displayTitle || entry.id || '';
+  const markers = ['字幕'];
+  if (entry.hasVideo) markers.push(entry.mediaKind === 'audio' ? '含音訊' : '含影片');
+  return `${base}（${markers.join(' / ')}）`;
+}
+
+function updateVideoCacheSelect(selectedId = state.activeVideoId) {
+  const select = dom.videoCacheSelect;
+  if (!select) return;
+  const searchTerm = (state.videoSearch || '').toLowerCase();
+  const entries = state.cachedEntries
+    .filter((entry) => entry?.hasVideo && entry.videoFilename && matchesEntrySearch(entry, searchTerm));
+  populateSelect(select, entries, {
+    selectedId,
+    placeholder: '選擇影片或音訊',
+    emptyLabel: state.videoSearch ? '（沒有符合的媒體）' : '（尚無快取媒體）',
+    buildLabel: formatVideoOptionLabel,
+    buildTitle: (entry) => entry.videoPath || entry.videoFilename || ''
+  });
+}
+
+function updateSubsCacheSelect(selectedId = state.activeSubsId) {
+  const select = dom.subsCacheSelect;
+  if (!select) return;
+  const searchTerm = (state.subsSearch || '').toLowerCase();
+  const entries = state.cachedEntries
+    .filter((entry) => entry?.hasSubs && entry.subsPath && matchesEntrySearch(entry, searchTerm));
+  populateSelect(select, entries, {
+    selectedId,
+    placeholder: '選擇字幕',
+    emptyLabel: state.subsSearch ? '（沒有符合的字幕）' : '（尚無快取字幕）',
+    buildLabel: formatSubtitleOptionLabel,
+    buildTitle: (entry) => entry.subsPath || entry.subsFilename || ''
+  });
+}
+
+function populateSelect(select, entries, {
+  selectedId,
+  placeholder,
+  emptyLabel,
+  buildLabel,
+  buildTitle
+}) {
+  select.innerHTML = '';
+  if (!entries.length) {
+    const option = new Option(emptyLabel, '');
+    option.selected = true;
+    option.disabled = true;
+    select.add(option);
+    select.disabled = true;
     return;
   }
-
-  state.activeCacheId = entry.id;
-  if (setSelectValue && dom.downloadedSelect) {
-    dom.downloadedSelect.value = entry.id;
+  select.disabled = false;
+  const placeholderOption = new Option(placeholder, '', !selectedId, !selectedId);
+  select.add(placeholderOption);
+  entries.forEach((entry) => {
+    const option = new Option(buildLabel(entry), entry.id, false, entry.id === selectedId);
+    option.title = buildTitle(entry);
+    select.add(option);
+  });
+  if (selectedId && entries.some((entry) => entry.id === selectedId)) {
+    select.value = selectedId;
+  } else {
+    select.value = '';
   }
-  updateActiveCacheInfo(entry);
-  if (entry.hasSubs && entry.subsPath && dom.subsPicked) {
-    dom.subsPicked.textContent = entry.subsPath;
-  }
+}
 
-  if (entry.hasVideo && entry.videoFilename) {
+function handleVideoCacheSearch() {
+  state.videoSearch = (dom.videoCacheSearch?.value || '').trim();
+  updateVideoCacheSelect(state.activeVideoId);
+}
+
+function handleSubsCacheSearch() {
+  state.subsSearch = (dom.subsCacheSearch?.value || '').trim();
+  updateSubsCacheSelect(state.activeSubsId);
+}
+
+function getEntryById(id) {
+  if (!id) return null;
+  return state.cachedEntries.find((item) => item.id === id) || null;
+}
+
+function handleVideoCacheSelectChange() {
+  const id = dom.videoCacheSelect?.value || '';
+  state.activeVideoId = id;
+  const entry = getEntryById(id);
+  loadVideoEntry(entry);
+  updateActiveCacheInfo({ video: entry, subs: getEntryById(state.activeSubsId) });
+}
+
+function handleSubsCacheSelectChange() {
+  const id = dom.subsCacheSelect?.value || '';
+  state.activeSubsId = id;
+  const entry = getEntryById(id);
+  loadSubtitleEntry(entry);
+  updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: entry });
+}
+
+async function loadVideoEntry(entry) {
+  if (!entry || !entry.hasVideo || !entry.videoFilename) {
     releaseObjectUrl();
-    const url = buildCacheUrl(entry.videoFilename);
-    dom.video.src = url;
-    dom.video.pause();
-    try { dom.video.currentTime = 0; } catch { /* noop */ }
+    return;
   }
-
-  if (entry.hasSubs && entry.subsPath) {
-    try {
-      await loadAssIntoOverlay(entry.subsPath);
-    } catch (err) {
-      console.error('[cache] 載入字幕失敗', err);
-      alert('載入快取字幕失敗：' + (err?.message || err));
-    }
-  }
-
+  releaseObjectUrl();
+  const url = buildCacheUrl(entry.videoFilename);
+  dom.video.src = url;
+  dom.video.pause();
+  try { dom.video.currentTime = 0; } catch { /* noop */ }
   syncOverlayConnection();
 }
 
-function updateActiveCacheInfo(entry) {
-  if (!dom.activeCacheInfo) return;
-  if (!entry) {
-    dom.activeCacheInfo.textContent = state.activeCacheId ? '' : '（尚未選擇快取項目）';
+async function loadSubtitleEntry(entry) {
+  if (!entry || !entry.hasSubs || !entry.subsPath) {
     return;
   }
-  dom.activeCacheInfo.textContent = `已選擇：${describeCacheEntry(entry)}`;
+  try {
+    await loadAssIntoOverlay(entry.subsPath);
+    if (dom.subsPicked) dom.subsPicked.textContent = entry.subsPath;
+  } catch (err) {
+    console.error('[cache] 載入字幕失敗', err);
+    alert('載入快取字幕失敗：' + (err?.message || err));
+  }
+}
+
+function updateActiveCacheInfo({ video = getEntryById(state.activeVideoId), subs = getEntryById(state.activeSubsId) } = {}) {
+  if (!dom.activeCacheInfo) return;
+  const videoLabel = video ? describeVideoEntry(video) : '（未選擇）';
+  const subsLabel = subs ? describeSubtitleEntry(subs) : '（未選擇）';
+  dom.activeCacheInfo.textContent = `影片/音訊：${videoLabel} | 字幕：${subsLabel}`;
 }
 
 /* ---------------- 字幕處理 ---------------- */
@@ -403,16 +533,22 @@ async function handleFetchSubsOnly() {
     }
     appendLog(`[subs] 已下載字幕：\n${files.join('\n')}`);
     if (Array.isArray(entries) && entries.length) {
-      let first = null;
-      entries.forEach((entry, idx) => {
+      let firstSubs = null;
+      entries.forEach((entry) => {
         const merged = upsertCacheEntry(entry);
-        if (idx === 0) first = merged;
+        if (!firstSubs && merged?.hasSubs && merged.subsPath) {
+          firstSubs = merged;
+        }
       });
-      updateDownloadedSelect(first?.id);
-      dom.subsPicked.textContent = first?.subsPath || files[0];
-      activateCacheEntry(first, { setSelectValue: true }).catch((err) => {
-        console.error('[cache] 啟用字幕快取失敗', err);
-      });
+      if (firstSubs) {
+        state.activeSubsId = firstSubs.id;
+        updateSubsCacheSelect(firstSubs.id);
+        await loadSubtitleEntry(firstSubs);
+        updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: firstSubs });
+        dom.subsPicked.textContent = firstSubs.subsPath;
+      } else {
+        updateSubsCacheSelect(state.activeSubsId);
+      }
     } else {
       const assPath = files.find((f) => f.toLowerCase().endsWith('.ass')) || files[0];
       await loadAssIntoOverlay(assPath);
@@ -444,16 +580,21 @@ async function handlePickSubs() {
   const subsTitle = stripFileExtension(path.split(/[\\/]/).pop() || '');
   const payload = { subsPath: path };
   if (subsTitle) payload.subsTitle = subsTitle;
-  if (state.activeCacheId) payload.id = state.activeCacheId;
-  else if (subsTitle) payload.title = subsTitle;
+  if (subsTitle) payload.title = subsTitle;
 
   try {
     const entry = await window.api.importLocalToCache(payload);
     if (entry) {
       const merged = upsertCacheEntry(entry);
-      updateDownloadedSelect(merged?.id);
-      dom.subsPicked.textContent = entry.subsPath || path;
-      await activateCacheEntry(merged, { setSelectValue: true });
+      if (merged?.hasSubs && merged.subsPath) {
+        state.activeSubsId = merged.id;
+        updateSubsCacheSelect(merged.id);
+        await loadSubtitleEntry(merged);
+        updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: merged });
+        dom.subsPicked.textContent = merged.subsPath;
+      } else {
+        updateSubsCacheSelect(state.activeSubsId);
+      }
       return;
     }
   } catch (err) {
@@ -526,8 +667,14 @@ async function handleLocalFileSelected(ev) {
       });
       if (entry) {
         const merged = upsertCacheEntry(entry);
-        updateDownloadedSelect(merged?.id);
-        await activateCacheEntry(merged, { setSelectValue: true });
+        if (merged?.hasVideo && merged.videoFilename) {
+          state.activeVideoId = merged.id;
+          updateVideoCacheSelect(merged.id);
+          await loadVideoEntry(merged);
+          updateActiveCacheInfo({ video: merged, subs: getEntryById(state.activeSubsId) });
+        } else {
+          updateVideoCacheSelect(state.activeVideoId);
+        }
         ev.target.value = '';
         return;
       }
@@ -540,25 +687,14 @@ async function handleLocalFileSelected(ev) {
   const url = URL.createObjectURL(file);
   releaseObjectUrl();
   state.objectUrl = url;
-  state.activeCacheId = '';
-  updateDownloadedSelect('');
-  if (dom.activeCacheInfo) dom.activeCacheInfo.textContent = `本地媒體：${file.name}`;
+  state.activeVideoId = '';
+  updateVideoCacheSelect('');
+  if (dom.activeCacheInfo) {
+    const subsLabel = describeSubtitleEntry(getEntryById(state.activeSubsId)) || '（未選擇）';
+    dom.activeCacheInfo.textContent = `影片/音訊：本地媒體：${file.name} | 字幕：${subsLabel}`;
+  }
   playVideo(url);
   ev.target.value = '';
-}
-
-function handleDownloadedSelectChange() {
-  const id = dom.downloadedSelect?.value;
-  if (!id) {
-    state.activeCacheId = '';
-    updateActiveCacheInfo(null);
-    return;
-  }
-  const entry = state.cachedEntries.find((item) => item.id === id);
-  if (!entry) return;
-  activateCacheEntry(entry, { setSelectValue: false }).catch((err) => {
-    console.error('[cache] 無法載入選取的快取項目', err);
-  });
 }
 
 function playVideo(url, { autoPlay = false } = {}) {
@@ -611,45 +747,35 @@ function debounce(fn, ms = 120) {
   };
 }
 
-function updateDownloadedSelect(selectedId = state.activeCacheId) {
-  const select = dom.downloadedSelect;
-  if (!select) return;
-  select.innerHTML = '';
-  if (!state.cachedEntries.length) {
-    const option = new Option('（尚無快取項目）', '');
-    option.selected = true;
-    select.add(option);
-    select.disabled = true;
-    return;
-  }
-  select.disabled = false;
-  const placeholder = new Option('選擇快取項目', '', !selectedId, !selectedId);
-  select.add(placeholder);
-  state.cachedEntries
-    .slice()
-    .sort((a, b) => (a?.addedAt || 0) - (b?.addedAt || 0))
-    .forEach((entry) => {
-      const label = formatCacheEntryLabel(entry);
-      const option = new Option(label, entry.id, false, entry.id === selectedId);
-      select.add(option);
-    });
-  if (selectedId) {
-    select.value = selectedId;
-  }
-}
-
-function createDownloadedSelect(rowEl) {
-  if (!rowEl) return null;
+function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
+  if (!rowEl || !rowEl.parentElement) return null;
+  const container = document.createElement('div');
+  container.className = 'row';
+  const labelEl = document.createElement('label');
+  labelEl.textContent = label || '';
+  container.appendChild(labelEl);
+  const searchInput = document.createElement('input');
+  searchInput.type = 'search';
+  searchInput.placeholder = searchPlaceholder || '';
+  searchInput.style.width = '200px';
+  searchInput.style.marginRight = '8px';
+  container.appendChild(searchInput);
   const select = document.createElement('select');
-  select.id = 'downloadedVideos';
-  select.style.marginLeft = '8px';
+  select.style.minWidth = '260px';
   select.disabled = true;
-  rowEl.appendChild(select);
-  const hint = document.createElement('small');
-  hint.style.marginLeft = '8px';
-  hint.textContent = '（快取的影片 / 音訊 / 字幕會出現在此，便於快速載入）';
-  rowEl.appendChild(hint);
-  return select;
+  container.appendChild(select);
+  if (hint) {
+    const hintEl = document.createElement('small');
+    hintEl.style.marginLeft = '8px';
+    hintEl.textContent = hint;
+    container.appendChild(hintEl);
+  }
+  const parent = rowEl.parentElement;
+  if (parent) {
+    if (rowEl.nextSibling) parent.insertBefore(container, rowEl.nextSibling);
+    else parent.appendChild(container);
+  }
+  return { container, search: searchInput, select };
 }
 
 function stripFileExtension(name = '') {
