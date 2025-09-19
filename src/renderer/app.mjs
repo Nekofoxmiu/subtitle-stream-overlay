@@ -27,7 +27,14 @@ const dom = {
   align: $('#align'),
   maxWidth: $('#maxWidth'),
   applyToOverlay: $('#applyToOverlay'),
-  activeCacheInfo: $('#activeCacheInfo')
+  activeCacheInfo: $('#activeCacheInfo'),
+  toggleAdvanced: $('#toggleAdvanced'),
+  closeAdvanced: $('#closeAdvanced'),
+  advancedSidebar: $('#advancedSidebar'),
+  sidebarOverlay: $('#sidebarOverlay'),
+  binProgressWrap: $('#binProgressWrap'),
+  binProgressBar: $('#binProgressBar'),
+  binProgressLabel: $('#binProgressLabel')
 };
 
 const videoCacheControls = createCacheSelector(dom.videoFile?.closest('.row'), {
@@ -56,7 +63,8 @@ const state = {
   activeSubsId: '',
   videoSearch: '',
   subsSearch: '',
-  objectUrl: ''
+  objectUrl: '',
+  binProgress: new Map()
 };
 
 /* ---------------- Overlay 時間同步 ---------------- */
@@ -97,8 +105,10 @@ const overlaySync = new OverlaySync(dom.video);
 (async function init() {
   setupEventHandlers();
   await loadInitialConfig();
+  await loadBinInfo();
   await refreshCachedEntries();
   window.api.onYtProgress(handleYtProgress);
+  window.api.onBinProgress(handleBinProgress);
 })();
 
 async function loadInitialConfig() {
@@ -113,6 +123,15 @@ async function loadInitialConfig() {
   dom.portView.textContent = dom.portInput.value || '';
   dom.cookiesView.textContent = cfg?.cookiesPath ? cfg.cookiesPath : '(未設定)';
   overlaySync.connect(getCurrentPort());
+}
+
+async function loadBinInfo() {
+  try {
+    const bins = await window.api.getBins?.();
+    if (bins) setBinInfo(bins);
+  } catch (err) {
+    console.error('[bins] 載入工具資訊失敗', err);
+  }
 }
 
 
@@ -158,6 +177,13 @@ function setupEventHandlers() {
   dom.subsCacheSelect?.addEventListener('change', handleSubsCacheSelectChange);
   dom.videoCacheSearch?.addEventListener('input', handleVideoCacheSearch);
   dom.subsCacheSearch?.addEventListener('input', handleSubsCacheSearch);
+
+  dom.toggleAdvanced?.addEventListener('click', () => setSidebarOpen(true));
+  dom.closeAdvanced?.addEventListener('click', () => setSidebarOpen(false));
+  dom.sidebarOverlay?.addEventListener('click', () => setSidebarOpen(false));
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') setSidebarOpen(false);
+  });
 
   ['background', 'align', 'maxWidth', 'port'].forEach((id) => {
     const el = document.getElementById(id);
@@ -215,6 +241,13 @@ function showDownloadProgress(show) {
     dom.dlProg.value = 0;
     if (dom.dlTxt) dom.dlTxt.textContent = '';
   }
+}
+
+function setSidebarOpen(open) {
+  const action = open ? 'add' : 'remove';
+  dom.advancedSidebar?.classList[action]('open');
+  dom.sidebarOverlay?.classList[action]('visible');
+  document.body.classList[action]('sidebar-open');
 }
 
 async function startYtDownload({ type = 'video' } = {}) {
@@ -288,6 +321,107 @@ function handleYtProgress(ev) {
     state.jobId = null;
     state.activeDownloadMode = null;
     alert('下載失敗：' + (ev.message || '未知錯誤'));
+  }
+}
+
+function handleBinProgress(ev) {
+  if (!ev || !ev.id || !(state.binProgress instanceof Map)) return;
+  const label = ev.label || ev.id;
+  const existing = state.binProgress.get(ev.id) || {};
+  const next = { ...existing, ...ev, label, updatedAt: Date.now() };
+  let message = existing.message || `${label}`;
+  let percent = ev.percent != null ? ev.percent : existing.percent ?? null;
+  let done = false;
+  let hideDelay = 2400;
+
+  switch (ev.status) {
+    case 'start':
+      if (ev.stage === 'download') {
+        message = `${label} 下載準備中...`;
+        percent = ev.percent != null ? ev.percent : 0;
+      } else if (ev.stage === 'extract') {
+        message = `${label} 解壓縮中...`;
+        percent = null;
+      } else {
+        message = `${label} 處理中...`;
+      }
+      break;
+    case 'progress': {
+      const percentText = ev.percent != null ? `${ev.percent.toFixed(1)}%` : '';
+      if (ev.stage === 'download') {
+        message = `${label} 下載中 ${percentText}`.trim();
+      } else {
+        message = `${label} ${percentText}`.trim();
+      }
+      percent = ev.percent != null ? ev.percent : percent;
+      break;
+    }
+    case 'done':
+      if (ev.message) {
+        message = ev.message;
+      } else if (ev.stage === 'extract') {
+        message = `${label} 解壓縮完成`;
+        percent = null;
+      } else if (ev.stage === 'download' || ev.stage === 'ready') {
+        message = `${label} 已完成下載`;
+        percent = 100;
+      } else {
+        message = `${label} 完成`;
+      }
+      done = true;
+      break;
+    case 'error':
+      message = ev.message ? `${label}：${ev.message}` : `${label} 發生錯誤`;
+      percent = null;
+      done = true;
+      hideDelay = 6000;
+      break;
+    default:
+      break;
+  }
+
+  next.message = message;
+  next.percent = percent;
+  next.done = done;
+  next.hideAfter = done ? Date.now() + hideDelay : null;
+  state.binProgress.set(ev.id, next);
+  renderBinProgress();
+
+  if (done) {
+    const targetHide = next.hideAfter;
+    setTimeout(() => {
+      const current = state.binProgress.get(ev.id);
+      if (!current) return;
+      if (current.hideAfter && targetHide === current.hideAfter) {
+        state.binProgress.delete(ev.id);
+        renderBinProgress();
+      }
+    }, hideDelay);
+  }
+}
+
+function renderBinProgress() {
+  if (!dom.binProgressWrap) return;
+  const entries = Array.from(state.binProgress.values());
+  if (!entries.length) {
+    dom.binProgressWrap.classList.add('hidden');
+    if (dom.binProgressBar) {
+      dom.binProgressBar.value = 0;
+      dom.binProgressBar.removeAttribute('value');
+    }
+    if (dom.binProgressLabel) dom.binProgressLabel.textContent = '';
+    return;
+  }
+
+  dom.binProgressWrap.classList.remove('hidden');
+  const active = entries.find((item) => !item.done) || entries[entries.length - 1];
+  if (dom.binProgressLabel) dom.binProgressLabel.textContent = active.message || '';
+  if (!dom.binProgressBar) return;
+  if (active.percent == null) {
+    dom.binProgressBar.removeAttribute('value');
+  } else {
+    dom.binProgressBar.max = 100;
+    dom.binProgressBar.value = Math.max(0, Math.min(100, active.percent));
   }
 }
 
@@ -636,6 +770,10 @@ async function handlePickFonts() {
 /* ---------------- Binaries ---------------- */
 async function handleCheckBins() {
   try {
+    if (state.binProgress instanceof Map) {
+      state.binProgress.clear();
+      renderBinProgress();
+    }
     const bins = await window.api.ensureBins();
     setBinInfo(bins);
   } catch (err) {

@@ -1,7 +1,7 @@
 import { app, dialog } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { pipeline } from 'node:stream';
+import { pipeline, Transform } from 'node:stream';
 import { promisify } from 'node:util';
 import extract from 'extract-zip';
 import fetch from 'node-fetch';
@@ -25,10 +25,64 @@ export function getBinPaths() {
 
 async function ensureDir(p) { await fs.promises.mkdir(p, { recursive: true }); }
 
-async function downloadTo(fileUrl, outPath, label) {
+function emitBinProgress(mainWindow, payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.webContents.send('bins:progress', payload);
+  } catch (err) {
+    console.error('[bins] 無法傳送進度', err);
+  }
+}
+
+async function downloadTo(fileUrl, outPath, label, { mainWindow, id } = {}) {
+  emitBinProgress(mainWindow, { id, label, stage: 'download', status: 'start' });
   const res = await fetch(fileUrl);
-  if (!res.ok) throw new Error(`${label} 下載失敗：${res.status} ${res.statusText}`);
-  await streamPipeline(res.body, fs.createWriteStream(outPath));
+  if (!res.ok) {
+    const message = `${label} 下載失敗：${res.status} ${res.statusText}`;
+    emitBinProgress(mainWindow, { id, label, stage: 'download', status: 'error', message });
+    throw new Error(message);
+  }
+
+  const total = Number(res.headers.get('content-length')) || 0;
+  let downloaded = 0;
+  let lastEmit = 0;
+  const progressStream = new Transform({
+    transform(chunk, encoding, callback) {
+      downloaded += chunk.length;
+      const now = Date.now();
+      if (!total || now - lastEmit > 150) {
+        lastEmit = now;
+        const percent = total ? Math.min(100, (downloaded / total) * 100) : null;
+        emitBinProgress(mainWindow, {
+          id,
+          label,
+          stage: 'download',
+          status: 'progress',
+          downloaded,
+          total,
+          percent
+        });
+      }
+      callback(null, chunk);
+    }
+  });
+
+  try {
+    await streamPipeline(res.body, progressStream, fs.createWriteStream(outPath));
+  } catch (err) {
+    emitBinProgress(mainWindow, { id, label, stage: 'download', status: 'error', message: err?.message || String(err) });
+    throw err;
+  }
+
+  emitBinProgress(mainWindow, {
+    id,
+    label,
+    stage: 'download',
+    status: 'done',
+    downloaded,
+    total,
+    percent: total ? 100 : null
+  });
   return outPath;
 }
 
@@ -52,20 +106,34 @@ export async function checkAndOfferDownload(mainWindow) {
   });
   if (r.response !== 0) throw new Error('使用者取消下載');
 
+  const markReady = (id, label) => {
+    emitBinProgress(mainWindow, {
+      id,
+      label,
+      stage: 'ready',
+      status: 'done',
+      percent: 100,
+      message: `${label} 已就緒`
+    });
+  };
+
   // yt-dlp.exe
   if (missing.includes('yt-dlp.exe')) {
     const out = path.join(BIN_DIR, 'yt-dlp.exe');
-    await downloadTo(URLS.ytDlpExe, out, 'yt-dlp');
+    await downloadTo(URLS.ytDlpExe, out, 'yt-dlp', { mainWindow, id: 'yt-dlp' });
     ytDlpPath = out;
+    markReady('yt-dlp', 'yt-dlp');
   }
 
   // ffmpeg release essentials zip
   if (missing.includes('ffmpeg.exe')) {
     const zipPath = path.join(BIN_DIR, 'ffmpeg-release-essentials.zip');
-    await downloadTo(URLS.ffmpegZip, zipPath, 'ffmpeg');
+    await downloadTo(URLS.ffmpegZip, zipPath, 'ffmpeg', { mainWindow, id: 'ffmpeg' });
     const unzipDir = path.join(BIN_DIR, 'ffmpeg');
     await ensureDir(unzipDir);
+    emitBinProgress(mainWindow, { id: 'ffmpeg', label: 'ffmpeg', stage: 'extract', status: 'start' });
     await extract(zipPath, { dir: unzipDir });
+    emitBinProgress(mainWindow, { id: 'ffmpeg', label: 'ffmpeg', stage: 'extract', status: 'done' });
     // 尋找 ffmpeg.exe
     const subdirs = await fs.promises.readdir(unzipDir);
     let found = '';
@@ -73,8 +141,13 @@ export async function checkAndOfferDownload(mainWindow) {
       const p = path.join(unzipDir, d, 'bin', 'ffmpeg.exe');
       if (fs.existsSync(p)) { found = p; break; }
     }
-    if (!found) throw new Error('解壓後未找到 ffmpeg.exe');
+    if (!found) {
+      const message = '解壓後未找到 ffmpeg.exe';
+      emitBinProgress(mainWindow, { id: 'ffmpeg', label: 'ffmpeg', stage: 'extract', status: 'error', message });
+      throw new Error(message);
+    }
     ffmpegPath = found;
+    markReady('ffmpeg', 'ffmpeg');
   }
 
   store.set('bins', { ytDlpPath, ffmpegPath });

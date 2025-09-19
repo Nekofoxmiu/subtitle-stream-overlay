@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('api', {
   ytdlpDownloadAudio: (payload) => ipcRenderer.invoke('ytdlp:downloadAudio', payload),
   ytdlpCancel: (jobId) => ipcRenderer.invoke('ytdlp:cancel', { jobId }),
   onYtProgress: (cb) => ipcRenderer.on('ytdlp:progress', (_e, data) => cb?.(data)),
+  onBinProgress: (cb) => ipcRenderer.on('bins:progress', (_e, data) => cb?.(data)),
 
 
   // Subscribe to overlay state updates from main. Returns an unsubscribe fn.
