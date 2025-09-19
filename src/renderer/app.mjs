@@ -246,30 +246,33 @@ function setPreviewCollapsed(collapsed) {
 
 function applyControlVisibility() {
   const collapsed = state.controlCollapsed;
-  const minimizeLabel = '最小化控制區';
-  const restoreLabel = '顯示控制區';
+  const toggle = dom.controlToggle;
+  const minimizeLabel = toggle?.dataset?.labelMinimize || '最小化控制區';
+  const restoreLabel = toggle?.dataset?.labelRestore || '顯示控制區';
   dom.controlCard?.classList.toggle('card-collapsed', collapsed);
   dom.mainArea?.classList.toggle('controls-collapsed', collapsed);
-  if (dom.controlToggle) {
+  if (toggle) {
     const label = collapsed ? restoreLabel : minimizeLabel;
-    dom.controlToggle.textContent = label;
-    dom.controlToggle.setAttribute('aria-label', label);
-    dom.controlToggle.setAttribute('aria-controls', 'controlCard');
-    dom.controlToggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.textContent = label;
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('aria-controls', 'controlCard');
+    toggle.setAttribute('aria-expanded', String(!collapsed));
   }
 }
 
 function applyPreviewVisibility() {
   const collapsed = state.previewCollapsed;
-  const minimizeLabel = '最小化預覽與輸出';
-  const restoreLabel = '顯示預覽與輸出';
+  const toggle = dom.previewToggle;
+  const minimizeLabel = toggle?.dataset?.labelMinimize || '最小化預覽與輸出';
+  const restoreLabel = toggle?.dataset?.labelRestore || '顯示預覽與輸出';
   dom.previewCard?.classList.toggle('card-collapsed', collapsed);
-  if (dom.previewToggle) {
+  dom.mainArea?.classList.toggle('preview-collapsed', collapsed);
+  if (toggle) {
     const label = collapsed ? restoreLabel : minimizeLabel;
-    dom.previewToggle.textContent = label;
-    dom.previewToggle.setAttribute('aria-label', label);
-    dom.previewToggle.setAttribute('aria-controls', 'previewCard');
-    dom.previewToggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.textContent = label;
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('aria-controls', 'previewCard');
+    toggle.setAttribute('aria-expanded', String(!collapsed));
   }
 }
 
@@ -377,7 +380,9 @@ function handleYtProgress(ev) {
       }
     }
   } else if (ev.type === 'done') {
-    handleDownloadDone(ev);
+    handleDownloadDone(ev).catch((err) => {
+      console.error('[yt-dlp] finalize error', err);
+    });
   } else if (ev.type === 'error') {
     showDownloadProgress(false);
     state.jobId = null;
@@ -487,7 +492,7 @@ function renderBinProgress() {
   }
 }
 
-function handleDownloadDone(payload) {
+async function handleDownloadDone(payload) {
   showDownloadProgress(false);
   state.jobId = null;
   state.activeDownloadMode = null;
@@ -507,14 +512,25 @@ function handleDownloadDone(payload) {
   }
   if (entry) {
     const merged = upsertCacheEntry(entry);
+    let activeVideoEntry = getEntryById(state.activeVideoId);
+    let activeSubsEntry = getEntryById(state.activeSubsId);
     if (merged?.hasVideo && merged.videoFilename) {
       state.activeVideoId = merged.id;
       updateVideoCacheSelect(merged.id);
-      loadVideoEntry(merged);
+      await loadVideoEntry(merged);
+      activeVideoEntry = merged;
     } else {
       updateVideoCacheSelect(state.activeVideoId);
     }
-    updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: getEntryById(state.activeSubsId) });
+    if (merged?.hasSubs && merged.subsPath) {
+      state.activeSubsId = merged.id;
+      updateSubsCacheSelect(merged.id);
+      await loadSubtitleEntry(merged);
+      activeSubsEntry = merged;
+    } else {
+      updateSubsCacheSelect(state.activeSubsId);
+    }
+    updateActiveCacheInfo({ video: activeVideoEntry, subs: activeSubsEntry });
   } else {
     refreshCachedEntries().catch((err) => console.error('[cache] 重新整理快取失敗', err));
   }

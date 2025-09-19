@@ -199,11 +199,50 @@ function generateEntryId(prefix = 'entry') {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function subtitleLangPreference(code = '') {
+  const normalized = String(code || '').toLowerCase();
+  if (!normalized) return 99;
+  if (normalized.startsWith('zh-hant') || normalized.startsWith('zh-tw')) return 0;
+  if (normalized.startsWith('zh-hans') || normalized.startsWith('zh-cn')) return 1;
+  if (normalized === 'zh' || normalized.startsWith('zh-')) return 2;
+  if (normalized === 'en' || normalized.startsWith('en-')) return 3;
+  if (normalized === 'ja' || normalized.startsWith('ja-')) return 4;
+  return 9;
+}
+
+function sortSubtitleLangs(langs = []) {
+  const unique = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(langs) ? langs : []) {
+    if (!raw) continue;
+    if (raw === 'live_chat') continue;
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    unique.push(raw);
+  }
+  return unique.sort((a, b) => subtitleLangPreference(a) - subtitleLangPreference(b) || a.localeCompare(b));
+}
+
 const getVideoCacheDir = () => path.join(app.getPath('userData'), 'video-cache');
 const getSubsCacheDir = () => path.join(app.getPath('userData'), 'subs-cache');
 
 async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true });
+}
+
+function buildYtDlpEnv() {
+  return {
+    ...process.env,
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1',
+    NO_COLOR: '1',
+    ...(process.platform === 'win32'
+      ? {}
+      : {
+          LANG: process.env.LANG || 'en_US.UTF-8',
+          LC_ALL: process.env.LC_ALL || 'en_US.UTF-8'
+        })
+  };
 }
 
 function readDownloadStore() {
@@ -414,6 +453,143 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+function pickSubtitleCandidate(info) {
+  if (!info) {
+    return { lang: null, useAuto: false, manual: [], auto: [] };
+  }
+  const manual = sortSubtitleLangs(info?.subtitles ? Object.keys(info.subtitles) : []);
+  const auto = sortSubtitleLangs(info?.automatic_captions ? Object.keys(info.automatic_captions) : []);
+  if (manual.length) {
+    return { lang: manual[0], useAuto: false, manual, auto };
+  }
+  if (auto.length) {
+    return { lang: auto[0], useAuto: true, manual, auto };
+  }
+  return { lang: null, useAuto: false, manual, auto };
+}
+
+async function fetchVideoInfo(ytDlpPath, url, cookiesArgs = []) {
+  try {
+    const probeArgs = [...cookiesArgs, '--no-playlist', '-J', url];
+    const { out } = await run(ytDlpPath, probeArgs, { env: buildYtDlpEnv() });
+    try {
+      return JSON.parse(out);
+    } catch {
+      return null;
+    }
+  } catch (err) {
+    console.warn('[ytdlp] 無法取得影片資訊', err);
+    return null;
+  }
+}
+
+async function downloadSubsForEntry({
+  ytDlpPath,
+  url,
+  cookiesArgs = [],
+  ffmpegArgs = [],
+  lang,
+  useAuto = false,
+  info,
+  entryId,
+  title,
+  send,
+  jobId
+}) {
+  if (!lang) return null;
+  const subsDir = getSubsCacheDir();
+  await ensureDir(subsDir);
+  const before = new Set(await fs.readdir(subsDir));
+  const outTpl = path.join(subsDir, '%(title)s_%(id)s.%(ext)s');
+  const args = [
+    ...cookiesArgs,
+    '--no-playlist',
+    '--skip-download',
+    ...(useAuto ? ['--write-auto-sub'] : ['--write-subs']),
+    '--progress',
+    '--newline',
+    '--no-color',
+    '--encoding', 'utf-8',
+    '--sub-langs', lang,
+    '--convert-subs', 'ass',
+    ...ffmpegArgs,
+    '--output', outTpl,
+    url
+  ];
+
+  const tag = useAuto ? '自動字幕' : '字幕';
+  if (typeof send === 'function') {
+    send({ jobId, type: 'log', stream: 'stdout', line: `[subs] 下載${tag}（${lang}）` });
+  }
+
+  try {
+    await run(ytDlpPath, args, { env: buildYtDlpEnv() });
+  } catch (err) {
+    if (typeof send === 'function') {
+      send({ jobId, type: 'log', stream: 'stderr', line: `[subs] 下載失敗：${err?.message || err}` });
+    }
+    return null;
+  }
+
+  const afterList = await fs.readdir(subsDir);
+  const lower = (name) => String(name || '').toLowerCase();
+  const newNames = afterList.filter((name) => !before.has(name) && lower(name).endsWith('.ass'));
+  let targetNames = newNames;
+  if (!targetNames.length && info?.id) {
+    targetNames = afterList.filter((name) => lower(name).endsWith('.ass') && name.includes(info.id));
+  }
+  if (!targetNames.length) {
+    const assList = afterList.filter((name) => lower(name).endsWith('.ass'));
+    const stats = await Promise.all(assList.map(async (name) => {
+      try {
+        const stat = await fs.stat(path.join(subsDir, name));
+        return { name, mtime: stat.mtimeMs };
+      } catch {
+        return { name, mtime: 0 };
+      }
+    }));
+    stats.sort((a, b) => b.mtime - a.mtime);
+    if (stats[0]) targetNames = [stats[0].name];
+  }
+  if (!targetNames.length) {
+    if (typeof send === 'function') {
+      send({ jobId, type: 'log', stream: 'stderr', line: '[subs] 找不到下載後的字幕檔案' });
+    }
+    return null;
+  }
+
+  const stats = await Promise.all(targetNames.map(async (name) => {
+    try {
+      const stat = await fs.stat(path.join(subsDir, name));
+      return { name, mtime: stat.mtimeMs };
+    } catch {
+      return { name, mtime: 0 };
+    }
+  }));
+  stats.sort((a, b) => b.mtime - a.mtime);
+
+  let finalEntry = null;
+  let effectiveId = entryId;
+  for (const { name } of stats) {
+    try {
+      finalEntry = await registerSubtitleDownload({
+        id: effectiveId,
+        title: title || info?.title || undefined,
+        filename: name
+      });
+      if (finalEntry?.id && !effectiveId) effectiveId = finalEntry.id;
+    } catch (err) {
+      console.error('[ytdlp] 自動註冊字幕失敗', err);
+    }
+  }
+
+  if (finalEntry && typeof send === 'function') {
+    send({ jobId, type: 'log', stream: 'stdout', line: '[subs] 字幕下載完成' });
+  }
+
+  return finalEntry;
+}
+
 async function startYtDlpJob(event, {
   url,
   mode = 'video',
@@ -440,6 +616,14 @@ async function startYtDlpJob(event, {
     : 'bestvideo[ext!=webm]+bestaudio[ext!=webm]/bestvideo+bestaudio/best';
   const cookiesArgs = cookiesPath ? ['--cookies', cookiesPath] : [];
   const ffmpegArgs = ffmpegPath ? ['--ffmpeg-location', ffmpegPath] : [];
+  let videoInfo = await fetchVideoInfo(ytDlpPath, url, cookiesArgs);
+  let videoId = '';
+  let videoTitle = '';
+  if (videoInfo) {
+    if (typeof videoInfo.id === 'string') videoId = videoInfo.id;
+    if (typeof videoInfo.title === 'string') videoTitle = videoInfo.title;
+  }
+  const subtitlePlan = pickSubtitleCandidate(videoInfo);
   const modeArgs = mode === 'audio'
     ? ['-f', formatSel, '--extract-audio', '--audio-quality', '0', ...(audioFmt ? ['--audio-format', audioFmt] : [])]
     : ['-f', formatSel, '--merge-output-format', mergeFmt];
@@ -467,8 +651,6 @@ async function startYtDlpJob(event, {
   };
 
   let finalFile = '';
-  let videoId = '';
-  let videoTitle = '';
   // ===== 1) 既有：進度條維持不變 =====
   const reProg = /\[download\]\s+([\d.]+)%.*?at\s+([\d.]+\w+\/s).*?ETA\s+([\d:]+)/i;
 
@@ -556,8 +738,8 @@ async function startYtDlpJob(event, {
 
   child.on('close', async (code) => {
     running.delete(jobId);
-    if (code === 0) {
-      if (!finalFile) {
+      if (code === 0) {
+        if (!finalFile) {
         try {
           const list = await fs.readdir(cacheDir);
           const stats = await Promise.all(list.map(async f => {
@@ -582,6 +764,28 @@ async function startYtDlpJob(event, {
           console.error('[ytdlp] registerVideoDownload failed', err);
         }
         const normalizedName = entry?.videoFilename || filename;
+        if (subtitlePlan?.lang) {
+          try {
+            const updatedEntry = await downloadSubsForEntry({
+              ytDlpPath,
+              url,
+              cookiesArgs,
+              ffmpegArgs,
+              lang: subtitlePlan.lang,
+              useAuto: subtitlePlan.useAuto,
+              info: videoInfo,
+              entryId: entry?.id || (videoId ? `${videoId}#${mode === 'audio' ? 'audio' : 'video'}` : undefined),
+              title: videoTitle || entry?.title,
+              send,
+              jobId
+            });
+            if (updatedEntry) {
+              entry = updatedEntry;
+            }
+          } catch (err) {
+            send({ jobId, type: 'log', stream: 'stderr', line: `[subs] 自動下載字幕失敗：${err?.message || err}` });
+          }
+        }
         send({ jobId, type: 'done', filename: normalizedName, entry, mode });
       } else {
         send({ jobId, type: 'error', message: '下載完成但無法定位輸出檔案（可能為舊版 yt-dlp 異常輸出）' });
@@ -771,22 +975,13 @@ export function setupIpc(mainWindow) {
     const ffmpegArgs = ffmpegPath ? ['--ffmpeg-location', ffmpegPath] : [];
 
     // 1) 若未指定語言 → 先探測可用字幕並以彈窗請使用者選擇
+    let videoInfo = null;
     let selectedLangs = langs;
     let useAuto = false; // 新增：標記是否使用自動字幕
     if (!selectedLangs) {
-      const probeArgs = [
-        ...cookiesArgs, '--no-playlist', '-J', url
-      ];
-      const { out } = await run(ytDlpPath, probeArgs);
-      let info = null;
-      try { info = JSON.parse(out); } catch { /* 忽略解析失敗 */ }
-
-      const manual = info?.subtitles ? Object.keys(info.subtitles) : [];
-      const auto = info?.automatic_captions ? Object.keys(info.automatic_captions) : [];
-
-      //過濾掉'live_chat'因為其為Json格式無法轉換成字幕檔
-      const liveChatIdx = manual.indexOf('live_chat');
-      if (liveChatIdx > -1) manual.splice(liveChatIdx, 1);
+      videoInfo = await fetchVideoInfo(ytDlpPath, url, cookiesArgs);
+      const manual = sortSubtitleLangs(videoInfo?.subtitles ? Object.keys(videoInfo.subtitles) : []);
+      const auto = sortSubtitleLangs(videoInfo?.automatic_captions ? Object.keys(videoInfo.automatic_captions) : []);
 
       // 無任何字幕
       if (manual.length === 0 && auto.length === 0) {
@@ -799,21 +994,12 @@ export function setupIpc(mainWindow) {
         throw new Error('此影片沒有可用字幕');
       }
 
-      // 語言偏好排序 + 截斷
-      const pref = (s) =>
-        s.startsWith('zh-Hant') || s.startsWith('zh-TW') ? 0 :
-          s.startsWith('zh-Hans') || s.startsWith('zh-CN') ? 1 :
-            s === 'zh' || s.startsWith('zh-') ? 2 :
-              s === 'en' || s.startsWith('en-') ? 3 :
-                s === 'ja' || s.startsWith('ja-') ? 4 : 9;
-      const sortAndTrim = (arr) => [...new Set(arr)]
-        .sort((a, b) => pref(a) - pref(b) || a.localeCompare(b))
-        .slice(0, 12);
+      const limitList = (arr) => arr.slice(0, 12);
 
       let candidates = [];
       if (manual.length > 0) {
         // 僅列出人工字幕（避免把所有自動語言列出）
-        candidates = sortAndTrim(manual);
+        candidates = limitList(manual);
       } else {
         // 沒有人工字幕 → 先詢問是否改抓自動字幕
         const confirm = await dialog.showMessageBox(event.sender.getOwnerBrowserWindow(), {
@@ -827,7 +1013,7 @@ export function setupIpc(mainWindow) {
         });
         if (confirm.response !== 0) throw new Error('使用者取消選擇字幕語言');
         useAuto = true;
-        candidates = sortAndTrim(auto);
+        candidates = limitList(auto);
       }
 
       const r = await dialog.showMessageBox(event.sender.getOwnerBrowserWindow(), {
@@ -892,11 +1078,10 @@ export function setupIpc(mainWindow) {
     if (code !== 0) throw new Error(err || out || `yt-dlp 退出碼 ${code}`);
 
     // 4) 找出此次輸出的 .ass，因為改為 title_id 模板 → 以「包含 id」比對
-    const meta = await (async () => {
-      // 直接用 -J 取回 id/title，與輸出名對齊
-      const { out: j } = await run(ytDlpPath, [...cookiesArgs, '--no-playlist', '-J', url]);
-      try { const info = JSON.parse(j); return { id: info?.id || '', title: info?.title || '' }; } catch { return { id: '', title: '' }; }
-    })();
+    if (!videoInfo) {
+      videoInfo = await fetchVideoInfo(ytDlpPath, url, cookiesArgs);
+    }
+    const meta = videoInfo ? { id: videoInfo.id || '', title: videoInfo.title || '' } : { id: '', title: '' };
 
     let list = await fs.readdir(subsDir);
     list = list.filter(name => name.toLowerCase().endsWith('.ass') && (!meta.id || name.includes(meta.id)));
