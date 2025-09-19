@@ -11,6 +11,8 @@ const dom = {
   dlTxt: $('#dlTxt'),
   video: $('#localVideo'),
   videoFile: $('#videoFile'),
+  pickMedia: $('#pickMedia'),
+  mediaPicked: $('#mediaPicked'),
   ytUrl: $('#ytUrl'),
   subsPicked: $('#subsPicked'),
   fontsPicked: $('#fontsPicked'),
@@ -146,6 +148,8 @@ async function refreshCachedEntries({ activeVideoId = state.activeVideoId, activ
     state.activeSubsId = subsEntry ? subsEntry.id : '';
     updateVideoCacheSelect(state.activeVideoId);
     updateSubsCacheSelect(state.activeSubsId);
+    updateMediaPickedFromEntry(videoEntry || null);
+    updateSubsPickedFromEntry(subsEntry || null);
     updateActiveCacheInfo({ video: videoEntry || null, subs: subsEntry || null });
   } catch (err) {
     console.error('[cache] 無法載入快取清單', err);
@@ -166,6 +170,7 @@ function setupEventHandlers() {
   dom.pickCookies?.addEventListener('click', handlePickCookies);
   dom.clearCookies?.addEventListener('click', handleClearCookies);
   dom.checkBins?.addEventListener('click', handleCheckBins);
+  dom.pickMedia?.addEventListener('click', () => dom.videoFile?.click());
   dom.pickSubs?.addEventListener('click', handlePickSubs);
   dom.pickFonts?.addEventListener('click', handlePickFonts);
   dom.ytFetch?.addEventListener('click', handleFetchSubsOnly);
@@ -493,6 +498,53 @@ function describeSubtitleEntry(entry) {
   return `${base}（${markers.join(' / ')}）`;
 }
 
+function getFilenameFromPath(path = '') {
+  if (!path) return '';
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  if (!parts.length) return path;
+  return parts[parts.length - 1];
+}
+
+function setPickedLabel(el, { text = '', note = '' } = {}) {
+  if (!el) return;
+  if (!text) {
+    el.textContent = '';
+    el.removeAttribute('title');
+    return;
+  }
+  const label = note ? `${text}（${note}）` : text;
+  el.textContent = label;
+  el.title = label;
+}
+
+function updateMediaPickedFromEntry(entry) {
+  if (!entry) {
+    setPickedLabel(dom.mediaPicked, { text: '' });
+    return;
+  }
+  const label = describeVideoEntry(entry) || getFilenameFromPath(entry.videoFilename || entry.videoPath || '');
+  setPickedLabel(dom.mediaPicked, { text: label });
+}
+
+function updateSubsPickedFromEntry(entry) {
+  if (!entry) {
+    setPickedLabel(dom.subsPicked, { text: '' });
+    return;
+  }
+  const label = describeSubtitleEntry(entry) || getFilenameFromPath(entry.subsFilename || entry.subsPath || '');
+  setPickedLabel(dom.subsPicked, { text: label });
+}
+
+function updateMediaPickedFromPath(path, { note } = {}) {
+  const label = getFilenameFromPath(path) || path;
+  setPickedLabel(dom.mediaPicked, { text: label, note });
+}
+
+function updateSubsPickedFromPath(path, { note } = {}) {
+  const label = getFilenameFromPath(path) || path;
+  setPickedLabel(dom.subsPicked, { text: label, note });
+}
+
 function matchesEntrySearch(entry, term) {
   if (!term) return true;
   const haystack = [
@@ -618,8 +670,10 @@ function handleSubsCacheSelectChange() {
 async function loadVideoEntry(entry) {
   if (!entry || !entry.hasVideo || !entry.videoFilename) {
     releaseObjectUrl();
+    updateMediaPickedFromEntry(null);
     return;
   }
+  updateMediaPickedFromEntry(entry);
   releaseObjectUrl();
   const url = buildCacheUrl(entry.videoFilename);
   dom.video.src = url;
@@ -630,11 +684,12 @@ async function loadVideoEntry(entry) {
 
 async function loadSubtitleEntry(entry) {
   if (!entry || !entry.hasSubs || !entry.subsPath) {
+    updateSubsPickedFromEntry(null);
     return;
   }
   try {
     await loadAssIntoOverlay(entry.subsPath);
-    if (dom.subsPicked) dom.subsPicked.textContent = entry.subsPath;
+    updateSubsPickedFromEntry(entry);
   } catch (err) {
     console.error('[cache] 載入字幕失敗', err);
     alert('載入快取字幕失敗：' + (err?.message || err));
@@ -675,14 +730,13 @@ async function handleFetchSubsOnly() {
         updateSubsCacheSelect(firstSubs.id);
         await loadSubtitleEntry(firstSubs);
         updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: firstSubs });
-        dom.subsPicked.textContent = firstSubs.subsPath;
       } else {
         updateSubsCacheSelect(state.activeSubsId);
       }
     } else {
       const assPath = files.find((f) => f.toLowerCase().endsWith('.ass')) || files[0];
       await loadAssIntoOverlay(assPath);
-      dom.subsPicked.textContent = assPath;
+      updateSubsPickedFromPath(assPath);
       refreshCachedEntries().catch((err) => console.error('[cache] 重新整理快取失敗', err));
     }
   } catch (err) {
@@ -699,13 +753,13 @@ async function handlePickSubs() {
     try {
       const { outPath } = await window.api.convertToAss({ inputPath: path });
       path = outPath;
-      dom.subsPicked.textContent = `${path}（已轉 ASS）`;
+      updateSubsPickedFromPath(path, { note: '已轉 ASS' });
     } catch (err) {
       alert('轉 ASS 失敗：' + (err?.message || err));
       return;
     }
   } else {
-    dom.subsPicked.textContent = path;
+    updateSubsPickedFromPath(path);
   }
   const subsTitle = stripFileExtension(path.split(/[\\/]/).pop() || '');
   const payload = { subsPath: path };
@@ -721,7 +775,6 @@ async function handlePickSubs() {
         updateSubsCacheSelect(merged.id);
         await loadSubtitleEntry(merged);
         updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: merged });
-        dom.subsPicked.textContent = merged.subsPath;
       } else {
         updateSubsCacheSelect(state.activeSubsId);
       }
@@ -732,7 +785,7 @@ async function handlePickSubs() {
     alert('匯入字幕失敗：' + (err?.message || err));
   }
 
-  dom.subsPicked.textContent = path;
+  updateSubsPickedFromPath(path);
   try {
     await loadAssIntoOverlay(path);
   } catch (err) {
@@ -782,8 +835,23 @@ async function handleCheckBins() {
 }
 
 function setBinInfo(bins) {
-  if (!bins) return;
-  dom.binInfo.textContent = `yt-dlp: ${bins.ytDlpPath || '未設定'} | ffmpeg: ${bins.ffmpegPath || '未設定'}`;
+  if (!dom.binInfo) return;
+  if (!bins) {
+    dom.binInfo.textContent = '尚未檢查';
+    dom.binInfo.removeAttribute('title');
+    return;
+  }
+  const statusItems = [
+    { key: 'yt-dlp', ready: Boolean(bins.ytDlpPath) },
+    { key: 'ffmpeg', ready: Boolean(bins.ffmpegPath) }
+  ];
+  const html = statusItems.map(({ key, ready }) => `
+    <span class="bin-status ${ready ? 'ok' : 'missing'}">
+      <span class="bin-status__icon">${ready ? '✔' : '✕'}</span>
+      <span class="bin-status__label">${key}</span>
+    </span>
+  `).join('');
+  dom.binInfo.innerHTML = `<div class="bin-status-list">${html}</div>`;
 }
 
 /* ---------------- 本地影片 ---------------- */
@@ -847,6 +915,7 @@ async function handleLocalFileSelected(ev) {
   state.objectUrl = url;
   state.activeVideoId = '';
   updateVideoCacheSelect('');
+  updateMediaPickedFromPath(file.name || filePath);
   if (dom.activeCacheInfo) {
     const subsLabel = describeSubtitleEntry(getEntryById(state.activeSubsId)) || '（未選擇）';
     dom.activeCacheInfo.textContent = `影片/音訊：本地媒體：${file.name} | 字幕：${subsLabel}`;
@@ -919,9 +988,12 @@ function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   searchInput.style.marginRight = '8px';
   container.appendChild(searchInput);
   const select = document.createElement('select');
-  select.style.minWidth = '260px';
   select.disabled = true;
-  container.appendChild(select);
+  const selectWrapper = document.createElement('div');
+  selectWrapper.className = 'select-control';
+  selectWrapper.style.minWidth = '260px';
+  selectWrapper.appendChild(select);
+  container.appendChild(selectWrapper);
   if (hint) {
     const hintEl = document.createElement('small');
     hintEl.style.marginLeft = '8px';
