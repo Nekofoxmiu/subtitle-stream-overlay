@@ -51,15 +51,15 @@
     <div class="row">
       <label>YouTube 連結：</label>
       <input type="text" id="ytUrl" placeholder="https://www.youtube.com/watch?v=...">
-      <button id="ytDownload" class="btn">下載影片並播放</button>
+      <button id="ytDownload" class="btn">下載影片</button>
       <button id="ytCancel" class="btn">取消下載</button>
       <button id="ytFetch" class="btn">僅下載字幕</button>
       <progress id="dlProg" max="100" value="0" style="display:none"></progress>
       <span id="dlTxt" class="mono"></span>
     </div>
     <div class="row">
-      <label>本地影片：</label>
-      <input type="file" id="videoFile" accept="video/*">
+      <label>本地媒體：</label>
+      <input type="file" id="videoFile" accept="video/*,audio/*">
     </div>
     <div class="row">
       <label>本地字幕：</label>
@@ -117,6 +117,9 @@
   <fieldset>
     <legend>影片播放（同步 overlay 時間軸）</legend>
     <video id="localVideo" controls></video>
+    <div class="row">
+      <span id="activeCacheInfo" class="mono"></span>
+    </div>
   </fieldset>
 
   <script type="module" src="./app.mjs"></script>
