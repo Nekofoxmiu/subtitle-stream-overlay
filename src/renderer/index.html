@@ -50,7 +50,7 @@
 
     .app-shell {
       position: relative;
-      width: min(1120px, 100%);
+      width: 100%;
       min-height: 100vh;
       background: var(--surface);
       backdrop-filter: blur(18px);
@@ -352,11 +352,13 @@
       transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
     }
 
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    input[type="search"]:focus,
     select:focus {
       outline: none;
       border-color: rgba(37, 99, 235, 0.75);
       box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
-      background-color: rgba(255, 255, 255, 0.95);
     }
 
     select:disabled {
@@ -515,15 +517,24 @@
       color: #e2e8f0;
     }
 
-    .sidebar input,
+    .sidebar input {
+      background: rgba(15, 23, 42);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+    }
+
+    .sidebar input[type="number"]::-webkit-inner-spin-button,
+    .sidebar input[type="number"]::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
     .sidebar select {
-      background: rgba(15, 23, 42, 0.65);
+      background: rgba(15, 23, 42);
       border: 1px solid rgba(148, 163, 184, 0.3);
 
       width: 100%;
       padding: 10px 14px;
       border-radius: 12px;
-      color: var(--text-primary);
       font: inherit;
       -webkit-appearance: none;
       -moz-appearance: none;
@@ -696,7 +707,6 @@
         <div class="brand-icon">SO</div>
         <div>
           <h1>Subtitle Overlay</h1>
-          <p>控制面板</p>
         </div>
       </div>
       <div class="top-actions">
@@ -726,12 +736,11 @@
     <main class="main-area">
       <section class="card quick-card">
         <header class="card-header">
-          <h2>快速開始</h2>
-          <p>輸入來源或載入本地檔案，立即預覽字幕與媒體。</p>
+          <h2>控制區</h2>
+          <p>載入字幕，並提供影片或音訊進行同步監聽或監看。<br>快速於OBS、streamlabs等軟體動態呈現！</p>
         </header>
         <div class="stack">
           <div class="row">
-            <label for="ytUrl">YouTube 連結</label>
             <div class="field-body">
               <input type="text" id="ytUrl" placeholder="https://www.youtube.com/watch?v=...">
               <div class="action-row">
@@ -750,16 +759,14 @@
             </div>
           </div>
           <div class="row">
-            <label for="pickVideo">本地媒體</label>
             <div class="action-row">
-              <button id="pickVideo" class="btn" type="button">選擇媒體檔</button>
+              <button id="pickVideo" class="btn" type="button">選擇本地媒體檔</button>
             </div>
             <input type="file" id="videoFile" accept="video/*,audio/*" hidden>
           </div>
           <div class="row">
-            <label>本地字幕</label>
             <div class="action-row">
-              <button id="pickSubs" class="btn">選擇字幕檔</button>
+              <button id="pickSubs" class="btn">選擇本地字幕檔</button>
             </div>
           </div>
         </div>
