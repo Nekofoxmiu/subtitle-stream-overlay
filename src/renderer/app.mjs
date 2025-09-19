@@ -2,6 +2,9 @@ const $ = (selector) => document.querySelector(selector);
 
 const dom = {
   binInfo: $('#binInfo'),
+  controlCard: $('#controlCard'),
+  controlToggle: $('#controlCardToggle'),
+  previewToggle: $('#previewCardToggle'),
   portInput: $('#port'),
   portView: $('#portView'),
   applyMsg: $('#applyMsg'),
@@ -62,7 +65,8 @@ const state = {
   videoSearch: '',
   subsSearch: '',
   objectUrl: '',
-  binProgress: new Map()
+  binProgress: new Map(),
+  controlHidden: false
 };
 
 /* ---------------- Overlay 時間同步 ---------------- */
@@ -102,6 +106,7 @@ const overlaySync = new OverlaySync(dom.video);
 /* ---------------- 初始化 ---------------- */
 (async function init() {
   setupEventHandlers();
+  applyControlVisibility();
   await loadInitialConfig();
   await loadBinInfo();
   await refreshCachedEntries();
@@ -184,6 +189,19 @@ function setupEventHandlers() {
     if (event.key === 'Escape') setSidebarOpen(false);
   });
 
+  dom.controlToggle?.addEventListener('click', () => {
+    if (state.controlHidden) return;
+    setControlHidden(true);
+    dom.previewToggle?.focus();
+  });
+  dom.previewToggle?.addEventListener('click', () => {
+    const nextHidden = !state.controlHidden;
+    setControlHidden(nextHidden);
+    if (!nextHidden) {
+      dom.controlToggle?.focus();
+    }
+  });
+
   ['background', 'align', 'maxWidth', 'port'].forEach((id) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -208,6 +226,32 @@ function setupEventHandlers() {
     dom.applyMsg.textContent = `已更新。請以 OBS Browser Source 指向 http://localhost:${style.port}/overlay`;
     syncOverlayConnection();
   });
+}
+
+function setControlHidden(hidden) {
+  state.controlHidden = Boolean(hidden);
+  applyControlVisibility();
+}
+
+function applyControlVisibility() {
+  const minimizeLabel = '最小化控制區';
+  const restoreLabel = '顯示控制區';
+  if (dom.controlCard) {
+    dom.controlCard.classList.toggle('card-collapsed', state.controlHidden);
+  }
+  if (dom.controlToggle) {
+    dom.controlToggle.textContent = minimizeLabel;
+    dom.controlToggle.setAttribute('aria-label', minimizeLabel);
+    dom.controlToggle.setAttribute('aria-controls', 'controlCard');
+    dom.controlToggle.setAttribute('aria-expanded', String(!state.controlHidden));
+  }
+  if (dom.previewToggle) {
+    const label = state.controlHidden ? restoreLabel : minimizeLabel;
+    dom.previewToggle.textContent = label;
+    dom.previewToggle.setAttribute('aria-label', label);
+    dom.previewToggle.setAttribute('aria-controls', 'controlCard');
+    dom.previewToggle.setAttribute('aria-expanded', String(!state.controlHidden));
+  }
 }
 
 /* ---------------- Cookies ---------------- */
@@ -650,7 +694,7 @@ function updateActiveCacheInfo({ video = getEntryById(state.activeVideoId), subs
   if (!dom.activeCacheInfo) return;
   const videoLabel = video ? describeVideoEntry(video) : '（未選擇）';
   const subsLabel = subs ? describeSubtitleEntry(subs) : '（未選擇）';
-  dom.activeCacheInfo.textContent = `影片/音訊：${videoLabel} | 字幕：${subsLabel}`;
+  dom.activeCacheInfo.textContent = `影片/音訊：${videoLabel}\n字幕：${subsLabel}`;
 }
 
 /* ---------------- 字幕處理 ---------------- */
@@ -907,7 +951,7 @@ async function handleLocalFileSelected(ev) {
   updateVideoCacheSelect('');
   if (dom.activeCacheInfo) {
     const subsLabel = describeSubtitleEntry(getEntryById(state.activeSubsId)) || '（未選擇）';
-    dom.activeCacheInfo.textContent = `影片/音訊：本地媒體：${file.name} | 字幕：${subsLabel}`;
+    dom.activeCacheInfo.textContent = `影片/音訊：本地媒體：${file.name}\n字幕：${subsLabel}`;
   }
   playVideo(url);
   setPickedLabel(dom.videoPicked, { label: file.name || '', tooltip: filePath || file.name || '' });
