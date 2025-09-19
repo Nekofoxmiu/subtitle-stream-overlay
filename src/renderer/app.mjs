@@ -2,6 +2,9 @@ const $ = (selector) => document.querySelector(selector);
 
 const dom = {
   binInfo: $('#binInfo'),
+  ytDlpStatus: $('#ytDlpStatus'),
+  ffmpegStatus: $('#ffmpegStatus'),
+  binStatusNote: $('#binStatusNote'),
   portInput: $('#port'),
   portView: $('#portView'),
   applyMsg: $('#applyMsg'),
@@ -11,6 +14,8 @@ const dom = {
   dlTxt: $('#dlTxt'),
   video: $('#localVideo'),
   videoFile: $('#videoFile'),
+  pickVideo: $('#pickVideo'),
+  videoPicked: $('#videoPicked'),
   ytUrl: $('#ytUrl'),
   subsPicked: $('#subsPicked'),
   fontsPicked: $('#fontsPicked'),
@@ -37,7 +42,7 @@ const dom = {
   binProgressLabel: $('#binProgressLabel')
 };
 
-const videoCacheControls = createCacheSelector(dom.videoFile?.closest('.row'), {
+const videoCacheControls = createCacheSelector(dom.pickVideo?.closest('.row'), {
   label: '快取媒體：',
   searchPlaceholder: '搜尋影片或音訊...',
   hint: '（快取的影片 / 音訊會列在此，可搜尋）'
@@ -172,6 +177,7 @@ function setupEventHandlers() {
   dom.ytDownload?.addEventListener('click', handleDownloadVideo);
   dom.ytDownloadAudio?.addEventListener('click', handleDownloadAudio);
   dom.ytCancel?.addEventListener('click', handleCancelDownload);
+  dom.pickVideo?.addEventListener('click', handlePickVideoClick);
   dom.videoFile?.addEventListener('change', handleLocalFileSelected);
   dom.videoCacheSelect?.addEventListener('change', handleVideoCacheSelectChange);
   dom.subsCacheSelect?.addEventListener('change', handleSubsCacheSelectChange);
@@ -618,6 +624,7 @@ function handleSubsCacheSelectChange() {
 async function loadVideoEntry(entry) {
   if (!entry || !entry.hasVideo || !entry.videoFilename) {
     releaseObjectUrl();
+    setVideoPickedLabel();
     return;
   }
   releaseObjectUrl();
@@ -625,16 +632,18 @@ async function loadVideoEntry(entry) {
   dom.video.src = url;
   dom.video.pause();
   try { dom.video.currentTime = 0; } catch { /* noop */ }
+  setVideoPickedLabel({ entry });
   syncOverlayConnection();
 }
 
 async function loadSubtitleEntry(entry) {
   if (!entry || !entry.hasSubs || !entry.subsPath) {
+    setSubsPickedLabel();
     return;
   }
   try {
     await loadAssIntoOverlay(entry.subsPath);
-    if (dom.subsPicked) dom.subsPicked.textContent = entry.subsPath;
+    setSubsPickedLabel({ entry });
   } catch (err) {
     console.error('[cache] 載入字幕失敗', err);
     alert('載入快取字幕失敗：' + (err?.message || err));
@@ -675,14 +684,14 @@ async function handleFetchSubsOnly() {
         updateSubsCacheSelect(firstSubs.id);
         await loadSubtitleEntry(firstSubs);
         updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: firstSubs });
-        dom.subsPicked.textContent = firstSubs.subsPath;
+        setSubsPickedLabel({ entry: firstSubs });
       } else {
         updateSubsCacheSelect(state.activeSubsId);
       }
     } else {
       const assPath = files.find((f) => f.toLowerCase().endsWith('.ass')) || files[0];
       await loadAssIntoOverlay(assPath);
-      dom.subsPicked.textContent = assPath;
+      setSubsPickedLabel({ path: assPath });
       refreshCachedEntries().catch((err) => console.error('[cache] 重新整理快取失敗', err));
     }
   } catch (err) {
@@ -695,17 +704,19 @@ async function handlePickSubs() {
   const files = await window.api.openFiles({ filters: [{ name: 'Subtitles', extensions: ['ass', 'srt', 'vtt', 'ssa'] }] });
   if (!files.length) return;
   let path = files[0];
+  let converted = false;
   if (!path.toLowerCase().endsWith('.ass')) {
     try {
       const { outPath } = await window.api.convertToAss({ inputPath: path });
       path = outPath;
-      dom.subsPicked.textContent = `${path}（已轉 ASS）`;
+      converted = true;
+      setSubsPickedLabel({ path, converted: true });
     } catch (err) {
       alert('轉 ASS 失敗：' + (err?.message || err));
       return;
     }
   } else {
-    dom.subsPicked.textContent = path;
+    setSubsPickedLabel({ path });
   }
   const subsTitle = stripFileExtension(path.split(/[\\/]/).pop() || '');
   const payload = { subsPath: path };
@@ -721,7 +732,7 @@ async function handlePickSubs() {
         updateSubsCacheSelect(merged.id);
         await loadSubtitleEntry(merged);
         updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: merged });
-        dom.subsPicked.textContent = merged.subsPath;
+        setSubsPickedLabel({ entry: merged, converted });
       } else {
         updateSubsCacheSelect(state.activeSubsId);
       }
@@ -732,7 +743,7 @@ async function handlePickSubs() {
     alert('匯入字幕失敗：' + (err?.message || err));
   }
 
-  dom.subsPicked.textContent = path;
+  setSubsPickedLabel({ path, converted });
   try {
     await loadAssIntoOverlay(path);
   } catch (err) {
@@ -770,6 +781,9 @@ async function handlePickFonts() {
 /* ---------------- Binaries ---------------- */
 async function handleCheckBins() {
   try {
+    updateBinStatus(dom.ytDlpStatus, 'checking');
+    updateBinStatus(dom.ffmpegStatus, 'checking');
+    if (dom.binStatusNote) dom.binStatusNote.textContent = '檢查中...';
     if (state.binProgress instanceof Map) {
       state.binProgress.clear();
       renderBinProgress();
@@ -777,21 +791,37 @@ async function handleCheckBins() {
     const bins = await window.api.ensureBins();
     setBinInfo(bins);
   } catch (err) {
+    updateBinStatus(dom.ytDlpStatus, null);
+    updateBinStatus(dom.ffmpegStatus, null);
+    if (dom.binStatusNote) dom.binStatusNote.textContent = '檢查失敗';
     alert(err?.message || String(err));
   }
 }
 
 function setBinInfo(bins) {
-  if (!bins) return;
-  dom.binInfo.textContent = `yt-dlp: ${bins.ytDlpPath || '未設定'} | ffmpeg: ${bins.ffmpegPath || '未設定'}`;
+  if (!bins) {
+    updateBinStatus(dom.ytDlpStatus, null);
+    updateBinStatus(dom.ffmpegStatus, null);
+    if (dom.binStatusNote) dom.binStatusNote.textContent = '尚未檢查';
+    return;
+  }
+  updateBinStatus(dom.ytDlpStatus, Boolean(bins.ytDlpPath));
+  updateBinStatus(dom.ffmpegStatus, Boolean(bins.ffmpegPath));
+  if (dom.binStatusNote) dom.binStatusNote.textContent = '檢查完成';
 }
 
 /* ---------------- 本地影片 ---------------- */
+function handlePickVideoClick(ev) {
+  ev.preventDefault();
+  dom.videoFile?.click();
+}
+
 async function handleLocalFileSelected(ev) {
   const file = ev.target.files?.[0];
   if (!file) return;
   const filePath = typeof file.path === 'string' ? file.path : '';
   const title = stripFileExtension(file.name || '');
+  setVideoPickedLabel({ file });
 
   const attemptImport = async ({ useFilePayload }) => {
     const payload = {
@@ -830,6 +860,7 @@ async function handleLocalFileSelected(ev) {
       updateVideoCacheSelect(merged.id);
       await loadVideoEntry(merged);
       updateActiveCacheInfo({ video: merged, subs: getEntryById(state.activeSubsId) });
+      setVideoPickedLabel({ entry: merged });
     } else {
       updateVideoCacheSelect(state.activeVideoId);
     }
@@ -838,8 +869,8 @@ async function handleLocalFileSelected(ev) {
   }
 
   if (importError) {
-    console.error('[cache] 匯入本地媒體失敗', importError);
-    alert('匯入本地媒體失敗：' + (importError?.message || importError));
+    console.error('[cache] 匯入媒體失敗', importError);
+    alert('匯入媒體失敗：' + (importError?.message || importError));
   }
 
   const url = URL.createObjectURL(file);
@@ -908,23 +939,23 @@ function debounce(fn, ms = 120) {
 function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   if (!rowEl || !rowEl.parentElement) return null;
   const container = document.createElement('div');
-  container.className = 'row';
+  container.className = 'row cache-row';
   const labelEl = document.createElement('label');
   labelEl.textContent = label || '';
   container.appendChild(labelEl);
+  const controls = document.createElement('div');
+  controls.className = 'cache-selector';
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.placeholder = searchPlaceholder || '';
-  searchInput.style.width = '200px';
-  searchInput.style.marginRight = '8px';
-  container.appendChild(searchInput);
+  controls.appendChild(searchInput);
   const select = document.createElement('select');
-  select.style.minWidth = '260px';
   select.disabled = true;
-  container.appendChild(select);
+  controls.appendChild(select);
+  container.appendChild(controls);
   if (hint) {
     const hintEl = document.createElement('small');
-    hintEl.style.marginLeft = '8px';
+    hintEl.className = 'cache-hint';
     hintEl.textContent = hint;
     container.appendChild(hintEl);
   }
@@ -936,11 +967,62 @@ function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   return { container, search: searchInput, select };
 }
 
+function basename(input = '') {
+  if (!input) return '';
+  const parts = input.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : input;
+}
+
 function stripFileExtension(name = '') {
   if (!name) return '';
   const idx = name.lastIndexOf('.');
   if (idx <= 0) return name;
   return name.slice(0, idx);
+}
+
+function setVideoPickedLabel({ entry, file, path } = {}) {
+  if (!dom.videoPicked) return;
+  let label = '';
+  if (entry) {
+    label = entry.title || entry.displayTitle || basename(entry.videoFilename || entry.videoPath || '');
+  }
+  if (!label && file?.name) label = file.name;
+  if (!label && path) label = basename(path);
+  dom.videoPicked.textContent = label || '尚未選擇';
+}
+
+function setSubsPickedLabel({ entry, path, converted } = {}) {
+  if (!dom.subsPicked) return;
+  let label = '';
+  if (entry) {
+    label = entry.title || entry.displayTitle || basename(entry.subsFilename || entry.subsPath || '');
+  }
+  if (!label && path) label = basename(path);
+  if (converted && label) label += '（已轉 ASS）';
+  if (converted && !label) label = '已轉 ASS 字幕';
+  dom.subsPicked.textContent = label || '尚未選擇';
+}
+
+function updateBinStatus(el, status) {
+  if (!el) return;
+  const icon = el.querySelector('.bin-status-icon');
+  const label = el.querySelector('.status-label');
+  const baseLabel = label?.dataset?.label || label?.textContent || '';
+  let nextStatus = 'unknown';
+  let symbol = '?';
+  if (status === true || status === 'ok') {
+    nextStatus = 'ok';
+    symbol = '✓';
+  } else if (status === false || status === 'missing') {
+    nextStatus = 'missing';
+    symbol = '✕';
+  } else if (status === 'checking') {
+    nextStatus = 'checking';
+    symbol = '…';
+  }
+  el.dataset.status = nextStatus;
+  if (icon) icon.textContent = symbol;
+  if (label) label.textContent = baseLabel;
 }
 
 async function buildFilePayload(file) {

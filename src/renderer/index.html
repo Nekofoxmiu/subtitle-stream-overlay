@@ -117,6 +117,71 @@
       min-width: 260px;
     }
 
+    .bin-status {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .bin-status-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: color 0.18s ease;
+    }
+
+    .bin-status-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.45);
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(148, 163, 184, 0.1);
+      color: var(--text-secondary);
+      transition: background 0.18s ease, border 0.18s ease, color 0.18s ease;
+    }
+
+    .bin-status-item[data-status="ok"] {
+      color: #16a34a;
+    }
+
+    .bin-status-item[data-status="ok"] .bin-status-icon {
+      background: rgba(34, 197, 94, 0.18);
+      border-color: rgba(34, 197, 94, 0.48);
+      color: #16a34a;
+    }
+
+    .bin-status-item[data-status="missing"] {
+      color: #dc2626;
+    }
+
+    .bin-status-item[data-status="missing"] .bin-status-icon {
+      background: rgba(248, 113, 113, 0.16);
+      border-color: rgba(248, 113, 113, 0.52);
+      color: #dc2626;
+    }
+
+    .bin-status-item[data-status="checking"] {
+      color: #2563eb;
+    }
+
+    .bin-status-item[data-status="checking"] .bin-status-icon {
+      background: rgba(37, 99, 235, 0.14);
+      border-color: rgba(37, 99, 235, 0.45);
+      color: #2563eb;
+    }
+
+    .status-note {
+      font-size: 12px;
+      display: block;
+      margin-top: -4px;
+    }
+
     .bin-progress {
       display: flex;
       align-items: center;
@@ -279,25 +344,30 @@
       width: 100%;
       padding: 10px 14px;
       border-radius: 12px;
-      border: 1px solid var(--border);
-      background: #fff;
+      border: 1px solid rgba(148, 163, 184, 0.55);
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(241, 245, 249, 0.96));
+      box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
       color: var(--text-primary);
       font: inherit;
+      transition: border 0.18s ease, box-shadow 0.18s ease;
       -webkit-appearance: none;
       -moz-appearance: none;
       appearance: none;
 
       /* 預留右側空間，避免文字壓到箭頭 */
       padding-right: 2.5em;
-      /* 依需要調整 */
 
       /* 自訂箭頭（SVG，可改顏色與大小） */
       background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23555' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
       background-repeat: no-repeat;
-
-      /* 這裡決定箭頭距右邊距離：改 12px 即可「往左移」 */
       background-position: right 12px center;
       background-size: 1em auto;
+    }
+
+    select:focus {
+      outline: none;
+      border-color: rgba(59, 130, 246, 0.55);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
     }
 
     /* 強制色彩模式下恢復原生，避免不可見 */
@@ -311,7 +381,46 @@
 
 
     input[type="file"] {
-      font: inherit;
+      display: none;
+    }
+
+    .file-picker {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .file-status {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .cache-row {
+      align-items: flex-start;
+    }
+
+    .cache-selector {
+      flex: 1 1 320px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .cache-selector input[type="search"] {
+      flex: 1 1 200px;
+      min-width: 160px;
+    }
+
+    .cache-selector select {
+      flex: 1 1 240px;
+      min-width: 220px;
+    }
+
+    .cache-hint {
+      margin-top: 6px;
+      font-size: 12px;
       color: var(--text-secondary);
     }
 
@@ -319,6 +428,18 @@
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
+    }
+
+    @media (max-width: 768px) {
+      .bin-status {
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .file-picker {
+        flex-direction: column;
+        align-items: stretch;
+      }
     }
 
     .progress-row {
@@ -635,7 +756,17 @@
       <div class="top-actions">
         <div class="bin-actions">
           <button id="checkBins" class="btn primary">檢查 / 下載必要工具</button>
-          <span id="binInfo" class="mono muted">尚未檢查</span>
+          <div id="binInfo" class="bin-status">
+            <span id="ytDlpStatus" class="bin-status-item" data-status="unknown">
+              <span class="bin-status-icon" aria-hidden="true">?</span>
+              <span class="status-label" data-label="yt-dlp">yt-dlp</span>
+            </span>
+            <span id="ffmpegStatus" class="bin-status-item" data-status="unknown">
+              <span class="bin-status-icon" aria-hidden="true">?</span>
+              <span class="status-label" data-label="ffmpeg">ffmpeg</span>
+            </span>
+          </div>
+          <span id="binStatusNote" class="status-note muted">尚未檢查</span>
           <div id="binProgressWrap" class="bin-progress hidden">
             <progress id="binProgressBar" max="100"></progress>
             <span id="binProgressLabel" class="mono"></span>
@@ -672,14 +803,18 @@
             </div>
           </div>
           <div class="row">
-            <label for="videoFile">本地媒體</label>
-            <input type="file" id="videoFile" accept="video/*,audio/*">
+            <label for="pickVideo">本地媒體</label>
+            <div class="file-picker">
+              <button id="pickVideo" class="btn">選擇媒體檔</button>
+              <span id="videoPicked" class="file-status mono muted">尚未選擇</span>
+              <input type="file" id="videoFile" accept="video/*,audio/*" hidden>
+            </div>
           </div>
           <div class="row">
             <label>本地字幕</label>
-            <div class="action-row">
+            <div class="file-picker">
               <button id="pickSubs" class="btn">選擇字幕檔</button>
-              <span id="subsPicked" class="mono muted"></span>
+              <span id="subsPicked" class="file-status mono muted">尚未選擇</span>
             </div>
           </div>
         </div>
