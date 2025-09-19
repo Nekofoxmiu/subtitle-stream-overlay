@@ -136,18 +136,14 @@ async function refreshCachedEntries({ activeVideoId = state.activeVideoId, activ
 
 
 function setupEventHandlers() {
-
   const debouncedSyncStyle = debounce(async () => {
     const style = collectStyle();
     await persistStyle(style);
     window.api.notifyOverlay({ style });
     syncOverlayConnection();
-    const activeEntry = state.cachedEntries.find((item) => item.id === state.activeVideoId && item.hasVideo && item.videoFilename);
-    if (!activeEntry) return;
-    // 重新設定下載影片的連線位置
-    const url = buildCacheUrl(activeEntry.videoFilename);
-    dom.video.src = url;
   }, 120);
+
+  
   dom.pickCookies?.addEventListener('click', handlePickCookies);
   dom.clearCookies?.addEventListener('click', handleClearCookies);
   dom.checkBins?.addEventListener('click', handleCheckBins);
