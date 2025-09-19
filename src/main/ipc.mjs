@@ -504,7 +504,7 @@ async function promptSubtitleLanguage(event, {
         cancelId: 1,
         title: '沒有人工字幕',
         message: '此影片沒有人工字幕。',
-        detail: '僅提供自動產生字幕（辨識品質可能較差）。是否改為下載自動字幕？'
+        detail: '僅提供自動產生字幕。是否改為下載自動字幕？\n警告：沒有匯入cookie無法下載自動字幕'
       });
       if (confirm.response !== 0) {
         return { lang: null, useAuto: false, info, reason: 'cancelled' };
