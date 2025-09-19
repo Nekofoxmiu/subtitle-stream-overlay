@@ -69,6 +69,7 @@ const state = {
   subsSearch: '',
   objectUrl: '',
   binProgress: new Map(),
+  binInfoRefreshTimer: null,
   controlCollapsed: false,
   previewMaximized: false,
   downloadProgressStarted: false,
@@ -486,6 +487,7 @@ function handleYtProgress(ev) {
 
 function handleBinProgress(ev) {
   if (!ev || !ev.id || !(state.binProgress instanceof Map)) return;
+  updateBinStatusIndicator(ev);
   const label = ev.label || ev.id;
   const existing = state.binProgress.get(ev.id) || {};
   const next = { ...existing, ...ev, label, updatedAt: Date.now() };
@@ -548,6 +550,9 @@ function handleBinProgress(ev) {
   renderBinProgress();
 
   if (done) {
+    if (ev.stage === 'ready') {
+      scheduleBinInfoRefresh();
+    }
     const targetHide = next.hideAfter;
     setTimeout(() => {
       const current = state.binProgress.get(ev.id);
@@ -582,6 +587,42 @@ function renderBinProgress() {
   } else {
     dom.binProgressBar.max = 100;
     dom.binProgressBar.value = Math.max(0, Math.min(100, active.percent));
+  }
+}
+
+function scheduleBinInfoRefresh(delay = 200) {
+  if (state.binInfoRefreshTimer) clearTimeout(state.binInfoRefreshTimer);
+  state.binInfoRefreshTimer = setTimeout(async () => {
+    state.binInfoRefreshTimer = null;
+    try {
+      const bins = await window.api.getBins?.();
+      setBinInfo(bins || null);
+    } catch (err) {
+      console.error('[bins] 無法更新工具狀態', err);
+    }
+  }, delay);
+}
+
+function updateBinStatusIndicator(ev) {
+  const iconEl = ev?.id === 'yt-dlp'
+    ? dom.binStatusYt
+    : ev?.id === 'ffmpeg'
+      ? dom.binStatusFfmpeg
+      : null;
+  if (!iconEl) return;
+
+  if (ev.status === 'error') {
+    applyBinStatus(iconEl, { available: false, pending: false, tooltip: ev.message || '' });
+    return;
+  }
+
+  if (ev.status === 'start' || ev.status === 'progress' || (ev.status === 'done' && ev.stage !== 'ready')) {
+    applyBinStatus(iconEl, { available: false, pending: true });
+    return;
+  }
+
+  if (ev.status === 'done' && ev.stage === 'ready') {
+    applyBinStatus(iconEl, { available: true, pending: false });
   }
 }
 
