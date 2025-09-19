@@ -34,6 +34,7 @@
       <span id="binInfo" class="mono"></span>
     </div>
   </fieldset>
+  
   <fieldset>
   <legend>Cookies（Netscape cookies.txt）</legend>
   <div class="row">
@@ -68,11 +69,21 @@
       <span id="subsPicked" class="mono"></span>
     </div>
     <div class="row"><small>若非 .ass 會自動轉成 .ass。</small></div>
-  </fieldset>
-  
-  <fieldset>
-    <legend>yt-dlp 日誌</legend>
-    <pre id="ytLog" style="background:transparent; color:rgb(0, 0, 0); height:200px; overflow:auto; white-space:pre-wrap"></pre>
+
+    <details id="ytLogWrap" style="margin-top:8px">
+      <summary style="cursor:pointer; display:flex; align-items:center; gap:8px; user-select:none">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden style="transition:transform .15s">
+          <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>yt-dlp 日誌</span>
+      </summary>
+      <pre id="ytLog" style="background:transparent; color:rgb(0,0,0); height:200px; overflow:auto; white-space:pre-wrap; margin:8px 0 0 20px"></pre>
+    </details>
+    <style>
+      /* 讓小圖標在展開時旋轉，隱藏預設 marker */
+      #ytLogWrap[open] summary svg { transform: rotate(90deg); }
+      #ytLogWrap summary::-webkit-details-marker { display: none; }
+    </style></summary>
   </fieldset>
 
   <fieldset>

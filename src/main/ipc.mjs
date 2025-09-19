@@ -1,5 +1,5 @@
 import { app, ipcMain, dialog } from 'electron';
-import { spawn, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
@@ -128,6 +128,10 @@ async function ingestFileIntoCache(sourcePath, {
   const resolvedSource = path.resolve(sourcePath);
   const stat = await fs.stat(resolvedSource);
   if (!stat.isFile()) throw new Error('sourcePath is not a file');
+  // 若來源檔已在目標資料夾，且為移動且不要求保留原名 → 直接沿用 yt-dlp 產生的檔名，避免二次改名造成亂碼
+  if (move && path.dirname(resolvedSource) === path.resolve(dir) && !preserveBasename) {
+    return { filename: path.basename(resolvedSource), filePath: resolvedSource };
+  }
   let ext = path.extname(resolvedSource);
   if (!ext && defaultExt) {
     ext = defaultExt.startsWith('.') ? defaultExt : `.${defaultExt}`;
@@ -314,15 +318,16 @@ async function upsertDownloadEntry(patch = {}) {
 async function registerVideoDownload({ id, title, filename, sourcePath, keepSource = false }) {
   const cacheDir = getVideoCacheDir();
   await ensureDir(cacheDir);
+
   let finalFilename = filename;
+
   if (sourcePath) {
     const { filename: storedName } = await ingestFileIntoCache(sourcePath, {
       dir: cacheDir,
       title,
-      id,
+      id,                      // 保留原始 id 作為檔名參考，不加後綴
       fallbackPrefix: 'video',
-      move: !keepSource,
-      preserveBasename: keepSource
+      move: !keepSource
     });
     finalFilename = storedName;
   } else if (filename) {
@@ -330,7 +335,7 @@ async function registerVideoDownload({ id, title, filename, sourcePath, keepSour
     const { filename: normalizedName } = await ingestFileIntoCache(existingPath, {
       dir: cacheDir,
       title,
-      id,
+      id,                      // 同上：僅作為檔名基底
       fallbackPrefix: 'video',
       move: true
     });
@@ -338,11 +343,23 @@ async function registerVideoDownload({ id, title, filename, sourcePath, keepSour
   } else {
     return null;
   }
-  const patch = { videoFilename: finalFilename };
-  if (id) patch.id = id;
-  if (title) patch.title = title;
+
+  // 依副檔名判斷型別，並在條目 id 上加不互斥後綴
+  const ext = path.extname(finalFilename).toLowerCase();
+  const isAudio = AUDIO_EXTS.has(ext);
+
+  // 先移除既有後綴再統一加正確後綴，避免重複
+  const baseId = String(id || path.parse(finalFilename).name).replace(/#(?:audio|video)$/, '');
+  const effectiveId = `${baseId}#${isAudio ? 'audio' : 'video'}`;
+
+  const patch = {
+    id: effectiveId,
+    title,
+    videoFilename: finalFilename
+  };
   return upsertDownloadEntry(patch);
 }
+
 
 async function registerSubtitleDownload({ id, title, sourcePath, filename, keepSource = false }) {
   const subsDir = getSubsCacheDir();
@@ -419,8 +436,8 @@ async function startYtDlpJob(event, {
 
   const metaPrefix = '__meta__';
   const formatSel = mode === 'audio'
-    ? 'bestaudio/best'
-    : "bv*[vcodec~='^(avc1|h264)']+ba/best";
+    ? 'bestaudio[ext!=webm]/bestaudio/best'
+    : 'bestvideo[ext!=webm]+bestaudio[ext!=webm]/bestvideo+bestaudio/best';
   const cookiesArgs = cookiesPath ? ['--cookies', cookiesPath] : [];
   const ffmpegArgs = ffmpegPath ? ['--ffmpeg-location', ffmpegPath] : [];
   const modeArgs = mode === 'audio'
@@ -431,15 +448,18 @@ async function startYtDlpJob(event, {
     ...cookiesArgs,
     ...modeArgs,
     '--no-playlist',
+    '--progress',
+    '--newline',
+    '--no-color',
+    '--encoding', 'utf-8',
+    '--embed-metadata',
+    '--embed-thumbnail',
     ...ffmpegArgs,
-    '--output', path.join(cacheDir, '%(id)s.%(ext)s'),
-    '--print', `${metaPrefix}id=%(id)s`,
-    '--print', `${metaPrefix}title=%(title)s`,
-    '--print', 'after_move:filepath',
+    '--output', path.join(cacheDir, '%(title)s_%(id)s.%(ext)s'),
     url
   ];
 
-  const child = spawn(ytDlpPath, args, { windowsHide: true, shell: false });
+  const child = execFile(ytDlpPath, args, { windowsHide: true, windowsVerbatimArguments: false, encoding: 'utf8', maxBuffer: 1024 * 1024 * 16 });
   running.set(jobId, child);
 
   const send = (payload) => {
@@ -449,13 +469,54 @@ async function startYtDlpJob(event, {
   let finalFile = '';
   let videoId = '';
   let videoTitle = '';
+  // ===== 1) 既有：進度條維持不變 =====
   const reProg = /\[download\]\s+([\d.]+)%.*?at\s+([\d.]+\w+\/s).*?ETA\s+([\d:]+)/i;
-  const reDest = /Destination:\s+(.+)\r?$/i;
-  const reMerging = /\[Merger\]\s+Merging formats into\s+"(.+)"\r?$/i;
-  const reExtractDst = /\[ExtractAudio\]\s+Destination:\s+(.+)\r?$/i;
+
+  // ===== 2) 型別與副檔名白名單 =====
+  const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.webm', '.mov', '.m4v']);
+  const AUDIO_EXTS = new Set(['.m4a', '.mp3', '.flac', '.wav', '.ogg', '.opus', '.aac', '.mka']);
+
+  // 中間檔（分離串流）排除片段：.401.ext / .f137.ext 等
+  const INTERMEDIATE = String.raw`\.(?:f)?\d{2,4}\.`;
+
+  // 根據任務型別產生對應 regex
+  function makeRegexByMode(mode /* 'video' | 'audio' */) {
+    const exts =
+      mode === 'audio'
+        ? '(?:m4a|mp3|flac|wav|ogg|opus|aac|mka)'
+        : '(?:mp4|mkv|webm|mov|m4v)';
+
+    // Destination: 僅接受對應型別的副檔名，並排除中間檔
+    const reDest = new RegExp(
+      `Destination:\\s+(?!.*${INTERMEDIATE}${exts}\\s*$)(.+\\.${exts})\\r?$`,
+      'i'
+    );
+
+    // Video 的合併輸出
+    const reMerging =
+      mode === 'video'
+        ? new RegExp(
+          String.raw`\[Merger\]\s+Merging formats into\s+"(.+?\.(?:mp4|mkv|webm|mov|m4v))"\r?$`,
+          'i'
+        )
+        : null;
+
+    // Audio 的抽取輸出
+    const reExtractDst =
+      mode === 'audio'
+        ? new RegExp(
+          `\\[ExtractAudio\\]\\s+Destination:\\s+(?!.*${INTERMEDIATE}(?:m4a|mp3|flac|wav|ogg|opus|aac|mka)\\s*$)(.+\\.(?:m4a|mp3|flac|wav|ogg|opus|aac|mka))\\r?$`,
+          'i'
+        )
+        : null;
+
+    return { reDest, reMerging, reExtractDst };
+  }
+  
+  const { reDest, reMerging, reExtractDst } = makeRegexByMode(mode);
 
   const considerChunk = (chunk, stream) => {
-    const text = chunk.toString();
+    const text = chunk.toString('utf8').replace(/\r(?!\n)/g, '\n'); // 將裸 CR 正規化成換行
     text.split(/\r?\n/).forEach((lineRaw) => {
       if (!lineRaw) return;
       const trimmed = lineRaw.trim();
@@ -490,8 +551,8 @@ async function startYtDlpJob(event, {
     });
   };
 
-  child.stdout.on('data', (d) => considerChunk(d, 'stdout'));
-  child.stderr.on('data', (d) => considerChunk(d, 'stderr'));
+  if (child.stdout) child.stdout.on('data', (d) => considerChunk(d, 'stdout'));
+  if (child.stderr) child.stderr.on('data', (d) => considerChunk(d, 'stderr'));
 
   child.on('close', async (code) => {
     running.delete(jobId);
@@ -698,56 +759,159 @@ export function setupIpc(mainWindow) {
   });
 
   // 下載 YouTube 字幕（不抓影片）
-  ipcMain.handle('ytdlp:fetchSubs', async (_e, { url, langs = 'zh-Hant,zh-Hans,zh-TW,zh,en.*' }) => {
-    const { ytDlpPath } = getBinPaths();
+  ipcMain.handle('ytdlp:fetchSubs', async (event, { url, langs } = {}) => {
+    if (!url) throw new Error('缺少 URL');
+
+    const { ytDlpPath, ffmpegPath } = getBinPaths();
     if (!ytDlpPath) throw new Error('yt-dlp 未設定');
+
     const cfg = getConfig();
     const cookiesPath = cfg.cookiesPath || '';
-    const outDir = getSubsCacheDir();
-    await ensureDir(outDir);
-    const metaPrefix = '__meta__';
+    const cookiesArgs = cookiesPath ? ['--cookies', cookiesPath] : [];
+    const ffmpegArgs = ffmpegPath ? ['--ffmpeg-location', ffmpegPath] : [];
+
+    // 1) 若未指定語言 → 先探測可用字幕並以彈窗請使用者選擇
+    let selectedLangs = langs;
+    let useAuto = false; // 新增：標記是否使用自動字幕
+    if (!selectedLangs) {
+      const probeArgs = [
+        ...cookiesArgs, '--no-playlist', '-J', url
+      ];
+      const { out } = await run(ytDlpPath, probeArgs);
+      let info = null;
+      try { info = JSON.parse(out); } catch { /* 忽略解析失敗 */ }
+
+      const manual = info?.subtitles ? Object.keys(info.subtitles) : [];
+      const auto = info?.automatic_captions ? Object.keys(info.automatic_captions) : [];
+
+      //過濾掉'live_chat'因為其為Json格式無法轉換成字幕檔
+      const liveChatIdx = manual.indexOf('live_chat');
+      if (liveChatIdx > -1) manual.splice(liveChatIdx, 1);
+
+      // 無任何字幕
+      if (manual.length === 0 && auto.length === 0) {
+        await dialog.showMessageBox(event.sender.getOwnerBrowserWindow(), {
+          type: 'info',
+          buttons: ['確定'],
+          title: '沒有可用字幕',
+          message: '此影片沒有可用字幕（含自動字幕）。'
+        });
+        throw new Error('此影片沒有可用字幕');
+      }
+
+      // 語言偏好排序 + 截斷
+      const pref = (s) =>
+        s.startsWith('zh-Hant') || s.startsWith('zh-TW') ? 0 :
+          s.startsWith('zh-Hans') || s.startsWith('zh-CN') ? 1 :
+            s === 'zh' || s.startsWith('zh-') ? 2 :
+              s === 'en' || s.startsWith('en-') ? 3 :
+                s === 'ja' || s.startsWith('ja-') ? 4 : 9;
+      const sortAndTrim = (arr) => [...new Set(arr)]
+        .sort((a, b) => pref(a) - pref(b) || a.localeCompare(b))
+        .slice(0, 12);
+
+      let candidates = [];
+      if (manual.length > 0) {
+        // 僅列出人工字幕（避免把所有自動語言列出）
+        candidates = sortAndTrim(manual);
+      } else {
+        // 沒有人工字幕 → 先詢問是否改抓自動字幕
+        const confirm = await dialog.showMessageBox(event.sender.getOwnerBrowserWindow(), {
+          type: 'warning',
+          buttons: ['使用自動字幕', '取消'],
+          defaultId: 0,
+          cancelId: 1,
+          title: '沒有人工字幕',
+          message: '此影片沒有人工字幕。',
+          detail: '僅提供自動產生字幕（辨識品質可能較差）。是否改為下載自動字幕？'
+        });
+        if (confirm.response !== 0) throw new Error('使用者取消選擇字幕語言');
+        useAuto = true;
+        candidates = sortAndTrim(auto);
+      }
+
+      const r = await dialog.showMessageBox(event.sender.getOwnerBrowserWindow(), {
+        type: 'question',
+        buttons: candidates,
+        cancelId: -1,
+        title: '選擇字幕語言',
+        message: useAuto ? '請選擇自動字幕語言：' : '請選擇字幕語言：',
+        detail: candidates.join('  ')
+      });
+      if (r.response < 0) throw new Error('使用者取消選擇字幕語言');
+      selectedLangs = candidates[r.response];
+    }
+
+    // 2) 建構 yt-dlp 下載字幕參數（人工 vs 自動分流）
+    const subsDir = getSubsCacheDir();
+    await ensureDir(subsDir);
+    const outTpl = path.join(subsDir, '%(title)s_%(id)s.%(ext)s');
+
     const args = [
-      ...(cookiesPath ? ['--cookies', cookiesPath] : []),
-      '--write-subs',
-      '--sub-langs', langs,
+      ...cookiesArgs,
+      '--no-playlist',
       '--skip-download',
+      ...(useAuto ? ['--write-auto-sub'] : ['--write-subs']), // 這行為重點：自動字幕才用 --write-auto-sub
+      '--progress',
+      '--newline',
+      '--no-color',
+      '--encoding', 'utf-8',
+      '--sub-langs', selectedLangs,       // 例如 'zh-Hant' 或 'en'
       '--convert-subs', 'ass',
-      '--no-overwrites',
-      '--print', `${metaPrefix}id=%(id)s`,
-      '--print', `${metaPrefix}title=%(title)s`,
-      '-o', path.join(outDir, '%(id)s.%(ext)s'),
+      ...ffmpegArgs,
+      '--output', outTpl,
       url
     ];
-    const { out, err } = await run(ytDlpPath, args, { cwd: outDir });
-    const combined = `${out}\n${err}`;
-    const meta = {};
-    combined.split(/\r?\n/).forEach((line) => {
-      if (!line) return;
-      if (!line.startsWith(metaPrefix)) return;
-      const rest = line.slice(metaPrefix.length);
-      const eq = rest.indexOf('=');
-      if (eq <= 0) return;
-      const key = rest.slice(0, eq);
-      const value = rest.slice(eq + 1);
-      meta[key] = value;
+
+
+    // 3) 串流標準輸出至前端（與下載進度相同事件通道）
+    const send = (payload) => { try { event.sender.send('ytdlp:progress', payload); } catch { } };
+    const child = execFile(ytDlpPath, args, {
+      windowsHide: true,
+      windowsVerbatimArguments: false,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024 * 16,
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1',
+        NO_COLOR: '1',
+        ...(process.platform === 'win32' ? {} : { LANG: process.env.LANG || 'en_US.UTF-8', LC_ALL: process.env.LC_ALL || 'en_US.UTF-8' })
+      }
     });
-    const files = await fs.readdir(outDir);
-    const assPaths = files
-      .filter(f => f.toLowerCase().endsWith('.ass'))
-      .map(f => path.join(outDir, f))
-      .filter((p) => {
-        if (!meta.id) return true;
-        const base = path.basename(p);
-        return base.startsWith(meta.id);
-      });
+
+    if (child.stdout) child.stdout.on('data', (d) => String(d).split(/\r?\n/).forEach(line => line && send({ type: 'log', stream: 'stdout', line })));
+    if (child.stderr) child.stderr.on('data', (d) => String(d).split(/\r?\n/).forEach(line => line && send({ type: 'log', stream: 'stderr', line })));
+
+    const { code, out, err } = await new Promise((resolve) => {
+      let so = '', se = '';
+      if (child.stdout) child.stdout.on('data', (d) => { so += d.toString(); });
+      if (child.stderr) child.stderr.on('data', (d) => { se += d.toString(); });
+      child.on('close', (c) => resolve({ code: c ?? 0, out: so, err: se }));
+    });
+    if (code !== 0) throw new Error(err || out || `yt-dlp 退出碼 ${code}`);
+
+    // 4) 找出此次輸出的 .ass，因為改為 title_id 模板 → 以「包含 id」比對
+    const meta = await (async () => {
+      // 直接用 -J 取回 id/title，與輸出名對齊
+      const { out: j } = await run(ytDlpPath, [...cookiesArgs, '--no-playlist', '-J', url]);
+      try { const info = JSON.parse(j); return { id: info?.id || '', title: info?.title || '' }; } catch { return { id: '', title: '' }; }
+    })();
+
+    let list = await fs.readdir(subsDir);
+    list = list.filter(name => name.toLowerCase().endsWith('.ass') && (!meta.id || name.includes(meta.id)));
+    const assPaths = list.map(name => path.join(subsDir, name));
+
+    // 5) 登記快取（維持既有介面）
     const entries = [];
     for (const assPath of assPaths) {
       const entry = await registerSubtitleDownload({ id: meta.id || path.parse(assPath).name, title: meta.title, sourcePath: assPath });
       if (entry) entries.push(entry);
     }
-    const normalizedFiles = entries.map((entry) => entry?.subsPath).filter(Boolean);
+    const normalizedFiles = entries.map(e => e?.subsPath).filter(Boolean);
     return { log: out + err, files: normalizedFiles.length ? normalizedFiles : assPaths, entries, meta };
   });
+
 
   // 轉字幕為 ASS
   ipcMain.handle('subs:convertToAss', async (_e, { inputPath }) => {
