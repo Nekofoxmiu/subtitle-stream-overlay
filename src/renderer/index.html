@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="zh-Hant">
+
 <head>
   <meta charset="utf-8">
   <!-- 僅保留本地/HTTP 播放，移除 YouTube 來源 -->
-  <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self';
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self';
                  img-src 'self' data:;
                  style-src 'self' 'unsafe-inline';
                  script-src 'self';
@@ -16,8 +16,8 @@
     :root {
       color-scheme: light;
       --bg-gradient: radial-gradient(circle at top left, rgba(59, 130, 246, 0.38), transparent 55%),
-                      radial-gradient(circle at 20% 80%, rgba(124, 58, 237, 0.32), transparent 55%),
-                      #0f172a;
+        radial-gradient(circle at 20% 80%, rgba(124, 58, 237, 0.32), transparent 55%),
+        #0f172a;
       --surface: rgba(255, 255, 255, 0.86);
       --surface-soft: rgba(255, 255, 255, 0.72);
       --text-primary: #0f172a;
@@ -264,8 +264,7 @@
 
     input[type="text"],
     input[type="number"],
-    input[type="search"],
-    select {
+    input[type="search"] {
       width: 100%;
       padding: 10px 14px;
       border-radius: 12px;
@@ -274,6 +273,42 @@
       color: var(--text-primary);
       font: inherit;
     }
+
+
+    select {
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text-primary);
+      font: inherit;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      appearance: none;
+
+      /* 預留右側空間，避免文字壓到箭頭 */
+      padding-right: 2.5em;
+      /* 依需要調整 */
+
+      /* 自訂箭頭（SVG，可改顏色與大小） */
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23555' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+      background-repeat: no-repeat;
+
+      /* 這裡決定箭頭距右邊距離：改 12px 即可「往左移」 */
+      background-position: right 12px center;
+      background-size: 1em auto;
+    }
+
+    /* 強制色彩模式下恢復原生，避免不可見 */
+    @media (forced-colors: active) {
+      select {
+        appearance: auto;
+        background-image: none;
+        padding-right: 14px;
+      }
+    }
+
 
     input[type="file"] {
       font: inherit;
@@ -417,6 +452,36 @@
     .sidebar select {
       background: rgba(15, 23, 42, 0.65);
       border: 1px solid rgba(148, 163, 184, 0.3);
+
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      color: var(--text-primary);
+      font: inherit;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      appearance: none;
+
+      /* 預留右側空間，避免文字壓到箭頭 */
+      padding-right: 2.5em;
+      /* 依需要調整 */
+
+      /* 自訂箭頭（SVG，可改顏色與大小） */
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23555' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+      background-repeat: no-repeat;
+
+      /* 這裡決定箭頭距右邊距離：改 12px 即可「往左移」 */
+      background-position: right 12px center;
+      background-size: 1em auto;
+    }
+
+    /* 強制色彩模式下恢復原生，避免不可見 */
+    @media (forced-colors: active) {
+      select {
+        appearance: auto;
+        background-image: none;
+        padding-right: 14px;
+      }
     }
 
     .sidebar .btn {
@@ -429,7 +494,7 @@
       padding: 14px 18px;
     }
 
-    .accordion > summary {
+    .accordion>summary {
       list-style: none;
       cursor: pointer;
       display: flex;
@@ -439,21 +504,21 @@
       color: #cbd5f5;
     }
 
-    .accordion > summary::-webkit-details-marker {
+    .accordion>summary::-webkit-details-marker {
       display: none;
     }
 
-    .accordion > summary span {
+    .accordion>summary span {
       display: inline-flex;
       align-items: center;
       gap: 10px;
     }
 
-    .accordion > summary svg {
+    .accordion>summary svg {
       transition: transform 0.2s ease;
     }
 
-    .accordion[open] > summary svg {
+    .accordion[open]>summary svg {
       transform: rotate(90deg);
     }
 
@@ -556,6 +621,7 @@
     }
   </style>
 </head>
+
 <body>
   <div class="app-shell">
     <header class="topbar">
@@ -616,7 +682,6 @@
               <span id="subsPicked" class="mono muted"></span>
             </div>
           </div>
-          <p class="hint">若非 .ass 會自動轉換。</p>
         </div>
       </section>
 
@@ -648,7 +713,8 @@
         <summary>
           <span>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round" />
             </svg>
             Cookies（Netscape cookies.txt）
           </span>
@@ -659,7 +725,8 @@
             <button id="clearCookies" class="btn ghost small">清除</button>
           </div>
           <div id="cookiesView" class="mono">(未設定)</div>
-          <small>若遇到 429 或需登入，請提供 cookies。如何匯出 YouTube cookies：<span class="mono">https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies</span></small>
+          <small>若遇到 429 或需登入，請提供 cookies。如何匯出 YouTube cookies：<span
+              class="mono">https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies</span></small>
         </div>
       </details>
 
@@ -667,7 +734,8 @@
         <summary>
           <span>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round" />
             </svg>
             字型管理
           </span>
@@ -684,7 +752,8 @@
         <summary>
           <span>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round" />
             </svg>
             顯示樣式
           </span>
@@ -716,7 +785,8 @@
         <summary>
           <span>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round" />
             </svg>
             HTTP 輸出
           </span>
@@ -726,7 +796,8 @@
             <label for="port">端口 (port)</label>
             <input type="number" id="port" value="1976" min="1" max="65535">
           </div>
-          <small>以 OBS Browser Source 指向 <span class="mono">http://localhost:<span id="portView">1976</span>/overlay</span></small>
+          <small>以 OBS Browser Source 指向 <span class="mono">http://localhost:<span
+                id="portView">1976</span>/overlay</span></small>
         </div>
       </details>
 
@@ -734,7 +805,8 @@
         <summary>
           <span>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round" />
             </svg>
             下載記錄
           </span>
@@ -743,7 +815,8 @@
           <details id="ytLogWrap">
             <summary>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
-                <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                  stroke-linejoin="round" />
               </svg>
               <span>yt-dlp 日誌</span>
             </summary>
@@ -756,4 +829,5 @@
 
   <script type="module" src="./app.mjs"></script>
 </body>
+
 </html>
