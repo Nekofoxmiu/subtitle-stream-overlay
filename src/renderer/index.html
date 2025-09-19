@@ -283,13 +283,39 @@
       box-shadow: 0 24px 36px -28px rgba(15, 23, 42, 0.45);
     }
 
+    .card.card-collapsed {
+      display: none;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .card-header-text {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1 1 auto;
+    }
+
+    .card-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
     .card-header h2 {
       margin: 0;
       font-size: 22px;
     }
 
     .card-header p {
-      margin: 6px 0 0;
+      margin: 0;
       color: var(--text-secondary);
       font-size: 14px;
     }
@@ -430,6 +456,7 @@
     .info-line {
       font-size: 13px;
       color: var(--text-secondary);
+      white-space: pre-line;
     }
 
     .apply-row {
@@ -734,10 +761,15 @@
     </header>
 
     <main class="main-area">
-      <section class="card quick-card">
+      <section id="controlCard" class="card quick-card">
         <header class="card-header">
-          <h2>控制區</h2>
-          <p>載入字幕，並提供影片或音訊進行同步監聽或監看。<br>快速於OBS、streamlabs等軟體動態呈現！</p>
+          <div class="card-header-text">
+            <h2>控制區</h2>
+            <p>載入字幕，並提供影片或音訊進行同步監聽或監看。<br>快速於OBS、streamlabs等軟體動態呈現！</p>
+          </div>
+          <div class="card-header-actions">
+            <button id="controlCardToggle" class="btn ghost small" type="button">最小化控制區</button>
+          </div>
         </header>
         <div class="stack">
           <div class="row">
@@ -772,10 +804,15 @@
         </div>
       </section>
 
-      <section class="card preview-card">
+      <section id="previewCard" class="card preview-card">
         <header class="card-header">
-          <h2>預覽與輸出</h2>
-          <p>確認字幕同步後，將設定套用到 overlay。</p>
+          <div class="card-header-text">
+            <h2>預覽與輸出</h2>
+            <p>確認字幕同步後，將設定套用到 overlay。</p>
+          </div>
+          <div class="card-header-actions">
+            <button id="previewCardToggle" class="btn ghost small" type="button">最小化控制區</button>
+          </div>
         </header>
         <div class="preview-area">
           <video id="localVideo" controls></video>
