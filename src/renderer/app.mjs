@@ -9,6 +9,12 @@ const dom = {
   log: $('#ytLog'),
   dlProg: $('#dlProg'),
   dlTxt: $('#dlTxt'),
+  binProgress: $('#binProgress'),
+  binStatus: $('#binStatus'),
+  ytDlpProgress: $('#ytDlpProgress'),
+  ytDlpProgressTxt: $('#ytDlpProgressTxt'),
+  ffmpegProgress: $('#ffmpegProgress'),
+  ffmpegProgressTxt: $('#ffmpegProgressTxt'),
   video: $('#localVideo'),
   videoFile: $('#videoFile'),
   ytUrl: $('#ytUrl'),
@@ -56,7 +62,10 @@ const state = {
   activeSubsId: '',
   videoSearch: '',
   subsSearch: '',
-  objectUrl: ''
+  objectUrl: '',
+  checkingBins: false,
+  binSessionId: null,
+  binHideTimer: null
 };
 
 /* ---------------- Overlay 時間同步 ---------------- */
@@ -99,6 +108,7 @@ const overlaySync = new OverlaySync(dom.video);
   await loadInitialConfig();
   await refreshCachedEntries();
   window.api.onYtProgress(handleYtProgress);
+  window.api.onBinProgress(handleBinProgress);
 })();
 
 async function loadInitialConfig() {
@@ -113,6 +123,13 @@ async function loadInitialConfig() {
   dom.portView.textContent = dom.portInput.value || '';
   dom.cookiesView.textContent = cfg?.cookiesPath ? cfg.cookiesPath : '(未設定)';
   overlaySync.connect(getCurrentPort());
+
+  try {
+    const bins = await window.api.getBins();
+    setBinInfo(bins);
+  } catch (err) {
+    console.warn('[bins] 無法讀取既有路徑', err);
+  }
 }
 
 
@@ -635,17 +652,171 @@ async function handlePickFonts() {
 
 /* ---------------- Binaries ---------------- */
 async function handleCheckBins() {
+  if (state.checkingBins) return;
+  state.checkingBins = true;
+  resetBinProgress({ show: true, message: '正在檢查必要元件…' });
+  if (dom.checkBins) dom.checkBins.disabled = true;
   try {
     const bins = await window.api.ensureBins();
     setBinInfo(bins);
   } catch (err) {
     alert(err?.message || String(err));
+  } finally {
+    state.checkingBins = false;
+    if (dom.checkBins) dom.checkBins.disabled = false;
   }
 }
 
 function setBinInfo(bins) {
   if (!bins) return;
-  dom.binInfo.textContent = `yt-dlp: ${bins.ytDlpPath || '未設定'} | ffmpeg: ${bins.ffmpegPath || '未設定'}`;
+  const yt = bins.ytDlpPath || '未設定';
+  const ff = bins.ffmpegPath || '未設定';
+  dom.binInfo.textContent = `yt-dlp: ${yt}\nffmpeg: ${ff}`;
+}
+
+function resetBinProgress({ show = false, message = '' } = {}) {
+  if (!dom.binProgress) return;
+  clearTimeout(state.binHideTimer);
+  state.binHideTimer = null;
+  if (dom.binStatus) dom.binStatus.textContent = message;
+  const tracks = [
+    { bar: dom.ytDlpProgress, text: dom.ytDlpProgressTxt },
+    { bar: dom.ffmpegProgress, text: dom.ffmpegProgressTxt }
+  ];
+  for (const { bar, text } of tracks) {
+    if (bar) {
+      try { bar.value = 0; } catch { /* noop */ }
+      bar.setAttribute('value', '0');
+    }
+    if (text) text.textContent = '';
+  }
+  dom.binProgress.hidden = !show;
+}
+
+function hideBinProgress() {
+  if (!dom.binProgress) return;
+  dom.binProgress.hidden = true;
+}
+
+function updateBinTrack(target, payload = {}) {
+  const mapping = {
+    'yt-dlp': { bar: dom.ytDlpProgress, text: dom.ytDlpProgressTxt },
+    ffmpeg: { bar: dom.ffmpegProgress, text: dom.ffmpegProgressTxt }
+  };
+  const entry = mapping[target];
+  if (!entry) return;
+  const { bar, text } = entry;
+  const percent = derivePercent(payload);
+  if (bar) {
+    if (percent == null) {
+      bar.removeAttribute('value');
+    } else {
+      try { bar.value = Math.max(0, Math.min(100, percent)); } catch { }
+      if (!bar.hasAttribute('max')) bar.max = 100;
+    }
+  }
+  if (text) {
+    text.textContent = buildProgressText(payload, percent);
+  }
+}
+
+function derivePercent({ percent, downloaded, total } = {}) {
+  if (typeof percent === 'number' && Number.isFinite(percent)) return percent;
+  if (typeof downloaded === 'number' && typeof total === 'number' && total > 0) {
+    return (downloaded / total) * 100;
+  }
+  return null;
+}
+
+function buildProgressText(payload = {}, percent) {
+  const { message, downloaded, total, stage } = payload;
+  if (message) return message;
+  const parts = [];
+  if (typeof percent === 'number' && Number.isFinite(percent)) {
+    parts.push(`${percent.toFixed(1)}%`);
+  }
+  if (typeof downloaded === 'number') {
+    const totalText = typeof total === 'number' && total > 0
+      ? `${formatBytes(downloaded)} / ${formatBytes(total)}`
+      : formatBytes(downloaded);
+    if (totalText) parts.push(totalText);
+  }
+  if (parts.length) return parts.join(' · ');
+  if (stage === 'extract') return '解壓縮中…';
+  if (stage === 'ready' || stage === 'done') return '已完成';
+  if (stage === 'skip') return '已存在';
+  if (stage === 'cancelled') return '已取消';
+  if (stage === 'error') return '下載失敗';
+  return '';
+}
+
+function formatBytes(val) {
+  const bytes = Number(val);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function handleBinProgress(ev) {
+  if (!ev) return;
+  const { sessionId, target, stage } = ev;
+  if (sessionId && state.binSessionId !== sessionId) {
+    state.binSessionId = sessionId;
+    resetBinProgress({ show: true, message: '正在準備下載…' });
+  }
+  if (!dom.binProgress) return;
+  dom.binProgress.hidden = false;
+
+  if (target === 'overall') {
+    if (dom.binStatus) {
+      dom.binStatus.textContent = ev.message || defaultOverallMessage(stage);
+    }
+    if (stage === 'done' || stage === 'ready') {
+      clearTimeout(state.binHideTimer);
+      state.binHideTimer = setTimeout(() => hideBinProgress(), 1600);
+    } else if (stage === 'error' || stage === 'cancelled') {
+      clearTimeout(state.binHideTimer);
+      state.binHideTimer = null;
+    }
+    return;
+  }
+
+  updateBinTrack(target, ev);
+  if (stage === 'error') {
+    clearTimeout(state.binHideTimer);
+    state.binHideTimer = null;
+    if (dom.binStatus && !dom.binStatus.textContent) dom.binStatus.textContent = '下載失敗';
+  }
+}
+
+function defaultOverallMessage(stage) {
+  switch (stage) {
+    case 'checking':
+      return '正在檢查必要元件…';
+    case 'prompt':
+      return '需要下載缺少的元件。';
+    case 'start':
+      return '開始下載必要元件…';
+    case 'download':
+      return '下載進行中…';
+    case 'extract':
+      return '正在解壓縮 ffmpeg…';
+    case 'ready':
+    case 'done':
+      return '元件已就緒。';
+    case 'cancelled':
+      return '已取消下載。';
+    case 'error':
+      return '下載失敗，請稍後再試。';
+    default:
+      return '';
+  }
 }
 
 /* ---------------- 本地影片 ---------------- */

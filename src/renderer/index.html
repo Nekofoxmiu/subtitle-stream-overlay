@@ -13,126 +13,536 @@
                  frame-src 'none'">
   <title>Subtitle Overlay</title>
   <style>
-    body { font: 14px/1.5 system-ui, "Noto Sans TC", sans-serif; margin: 20px; }
-    fieldset{margin-bottom:16px}
-    label{display:inline-block; min-width:120px}
-    input[type=text]{width:520px}
-    .row{margin:6px 0}
-    .btn{padding:6px 12px}
-    .mono{font-family: ui-monospace, SFMono-Regular, Consolas, monospace}
-    #localVideo { width: 720px; height: 405px; background:#111; display:block; }
-    progress { width: 320px; vertical-align: middle; }
+    :root {
+      color-scheme: dark;
+      --bg: #0b1120;
+      --panel: rgba(15, 23, 42, 0.72);
+      --panel-border: rgba(148, 163, 184, 0.16);
+      --panel-hover: rgba(30, 41, 59, 0.9);
+      --accent: #38bdf8;
+      --accent-strong: #0ea5e9;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --danger: #f87171;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font: 15px/1.6 "Inter", "Noto Sans TC", "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(circle at top right, rgba(56, 189, 248, 0.25), transparent 45%),
+                  radial-gradient(circle at bottom left, rgba(147, 197, 253, 0.2), transparent 40%),
+                  var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      padding: 32px 24px 40px;
+    }
+
+    a { color: var(--accent); }
+
+    .app-shell {
+      width: min(1200px, 100%);
+      display: grid;
+      grid-template-columns: minmax(260px, 310px) 1fr;
+      gap: 24px;
+    }
+
+    .sidebar {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 20px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      position: sticky;
+      top: 32px;
+      height: fit-content;
+      backdrop-filter: blur(16px);
+    }
+
+    .brand {
+      font-weight: 700;
+      font-size: 1.4rem;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .tagline {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin: 0 0 12px;
+    }
+
+    .sidebar details {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      border-radius: 14px;
+      padding: 10px 14px;
+      transition: background 0.2s ease;
+    }
+
+    .sidebar details:hover {
+      background: var(--panel-hover);
+    }
+
+    .sidebar summary {
+      cursor: pointer;
+      list-style: none;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .sidebar summary::-webkit-details-marker { display: none; }
+
+    .sidebar summary::after {
+      content: '\25BC';
+      font-size: 0.7rem;
+      transition: transform 0.2s ease;
+      opacity: 0.6;
+    }
+
+    .sidebar details[open] summary::after {
+      transform: rotate(180deg);
+      opacity: 1;
+    }
+
+    .sidebar .panel-body {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(148, 163, 184, 0.12);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .content {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: 0 20px 45px rgba(15, 23, 42, 0.45);
+      backdrop-filter: blur(16px);
+    }
+
+    .card h2 {
+      margin: 0 0 20px;
+      font-size: 1.35rem;
+    }
+
+    .card p.lead {
+      margin-top: -8px;
+      color: var(--text-muted);
+      margin-bottom: 18px;
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin: 10px 0;
+    }
+
+    .row.stacked {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    label {
+      min-width: 120px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    input[type="text"],
+    input[type="number"],
+    input[type="search"],
+    select,
+    button,
+    textarea {
+      font: inherit;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    input[type="search"],
+    select {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 12px;
+      color: var(--text);
+      padding: 10px 14px;
+      flex: 1;
+      min-width: 200px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+    }
+
+    input[type="file"] {
+      background: transparent;
+      color: var(--text-muted);
+    }
+
+    select:focus,
+    input:focus {
+      outline: 2px solid rgba(56, 189, 248, 0.4);
+      outline-offset: 2px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 18px;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      background: rgba(56, 189, 248, 0.2);
+      color: var(--accent);
+      font-weight: 600;
+      transition: transform 0.15s ease, background 0.2s ease, color 0.2s ease;
+    }
+
+    .btn.primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #0f172a;
+      box-shadow: 0 12px 24px rgba(14, 165, 233, 0.3);
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .btn:not(:disabled):hover {
+      transform: translateY(-1px);
+      background: rgba(56, 189, 248, 0.3);
+    }
+
+    .btn.primary:not(:disabled):hover {
+      transform: translateY(-1px);
+      background: linear-gradient(135deg, var(--accent-strong), #38bdf8);
+    }
+
+    .mono {
+      font-family: "Fira Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, "Noto Sans TC", monospace;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      word-break: break-all;
+      white-space: pre-line;
+    }
+
+    .hint {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    #localVideo {
+      width: 100%;
+      max-height: 360px;
+      background: #111827;
+      border-radius: 16px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+    }
+
+    progress {
+      width: 100%;
+      height: 8px;
+      appearance: none;
+      -webkit-appearance: none;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(148, 163, 184, 0.2);
+    }
+
+    progress::-webkit-progress-bar {
+      background: rgba(148, 163, 184, 0.18);
+    }
+
+    progress::-webkit-progress-value {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+    }
+
+    progress::-moz-progress-bar {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+    }
+
+    .bin-progress {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-top: 12px;
+      padding: 16px;
+      border-radius: 16px;
+      background: rgba(56, 189, 248, 0.08);
+      border: 1px solid rgba(56, 189, 248, 0.18);
+    }
+
+    .bin-progress[hidden] { display: none; }
+
+    .progress-item {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      font-weight: 600;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .progress-text {
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .log-panel {
+      background: rgba(15, 23, 42, 0.6);
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      padding: 12px;
+      max-height: 240px;
+      overflow: auto;
+      font-size: 0.85rem;
+      color: #0f172a;
+      background-color: rgba(248, 250, 252, 0.92);
+    }
+
+    #ytLog {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    #ytLogWrap summary {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    #ytLogWrap summary::-webkit-details-marker { display: none; }
+
+    #ytLogWrap summary svg {
+      transition: transform 0.15s ease;
+    }
+
+    #ytLogWrap[open] summary svg { transform: rotate(90deg); }
+
+    #ytLogWrap {
+      border: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    #applyMsg {
+      color: var(--accent);
+    }
+
+    #activeCacheInfo {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 1024px) {
+      body { padding: 24px 18px; }
+      .app-shell {
+        grid-template-columns: 1fr;
+      }
+      .sidebar {
+        position: static;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .card {
+        padding: 22px;
+      }
+      label {
+        min-width: 100px;
+      }
+    }
   </style>
 </head>
 <body>
-  <h2>Subtitle Overlay – 控制面板</h2>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        Subtitle Overlay
+        <span class="tagline">少步驟開箱即用的字幕覆蓋工具</span>
+      </div>
 
-  <fieldset>
-    <legend>啟動檢查</legend>
-    <div class="row">
-      <button id="checkBins" class="btn">檢查/下載 yt-dlp / ffmpeg</button>
-      <span id="binInfo" class="mono"></span>
-    </div>
-  </fieldset>
-  
-  <fieldset>
-  <legend>Cookies（Netscape cookies.txt）</legend>
-  <div class="row">
-    <button id="pickCookies" class="btn">選擇 cookies.txt</button>
-    <button id="clearCookies" class="btn">清除</button>
-    <span id="cookiesView" class="mono"></span>
+      <details open>
+        <summary>Cookies</summary>
+        <div class="panel-body">
+          <div class="row">
+            <button id="pickCookies" class="btn">選擇 cookies.txt</button>
+            <button id="clearCookies" class="btn">清除</button>
+          </div>
+          <div class="row mono" id="cookiesView">(未設定)</div>
+          <p class="hint">若遇到 429 或需登入，請提供 cookies。如何匯出 YouTube cookies：
+            <span class="mono">https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies</span>
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>顯示樣式</summary>
+        <div class="panel-body">
+          <div class="row"><label>最大寬度(px)：</label><input type="number" id="maxWidth" value="1920"></div>
+          <div class="row"><label>對齊：</label>
+            <select id="align">
+              <option value="left">置左</option>
+              <option value="center" selected>置中</option>
+              <option value="right">置右</option>
+            </select>
+          </div>
+          <div class="row"><label>背景：</label>
+            <select id="background">
+              <option value="transparent" selected>透明</option>
+              <option value="green">綠幕</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>字型</summary>
+        <div class="panel-body">
+          <div class="row">
+            <button id="pickFonts" class="btn">選擇 .ttf/.otf/.woff2</button>
+            <span id="fontsPicked" class="mono"></span>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>HTTP 輸出</summary>
+        <div class="panel-body">
+          <div class="row">
+            <label>端口(port)：</label>
+            <input type="number" id="port" value="1976">
+            <span class="mono">→ http://localhost:<span id="portView">1976</span>/overlay</span>
+          </div>
+          <div class="row">
+            <button id="applyToOverlay" class="btn">載入到輸出</button>
+            <span id="applyMsg"></span>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>yt-dlp 日誌</summary>
+        <div class="panel-body">
+          <details id="ytLogWrap">
+            <summary>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              查看日誌
+            </summary>
+            <div class="log-panel">
+              <pre id="ytLog"></pre>
+            </div>
+          </details>
+        </div>
+      </details>
+    </aside>
+
+    <main class="content">
+      <section class="card">
+        <h2>開始使用</h2>
+        <p class="lead">一步完成必要檢查與安裝，確保 yt-dlp 與 ffmpeg 可用。</p>
+        <div class="row">
+          <button id="checkBins" class="btn primary">檢查 / 下載 yt-dlp 與 ffmpeg</button>
+          <span id="binInfo" class="mono"></span>
+        </div>
+        <div id="binProgress" class="bin-progress" hidden>
+          <div class="progress-header">
+            <span id="binStatus" class="progress-text">正在準備...</span>
+          </div>
+          <div class="progress-item" data-target="yt-dlp">
+            <div class="progress-header">
+              <span>yt-dlp</span>
+              <span id="ytDlpProgressTxt" class="progress-text"></span>
+            </div>
+            <progress id="ytDlpProgress" max="100" value="0"></progress>
+          </div>
+          <div class="progress-item" data-target="ffmpeg">
+            <div class="progress-header">
+              <span>ffmpeg</span>
+              <span id="ffmpegProgressTxt" class="progress-text"></span>
+            </div>
+            <progress id="ffmpegProgress" max="100" value="0"></progress>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>字幕來源</h2>
+        <p class="lead">從 YouTube 下載字幕/媒體，或匯入本地檔案。</p>
+        <div class="row">
+          <label>YouTube 連結：</label>
+          <input type="text" id="ytUrl" placeholder="https://www.youtube.com/watch?v=...">
+        </div>
+        <div class="row">
+          <button id="ytDownload" class="btn">下載影片</button>
+          <button id="ytDownloadAudio" class="btn">下載音訊</button>
+          <button id="ytFetch" class="btn">僅下載字幕</button>
+          <button id="ytCancel" class="btn">取消下載</button>
+        </div>
+        <div class="row">
+          <progress id="dlProg" max="100" value="0" style="display:none"></progress>
+          <span id="dlTxt" class="mono"></span>
+        </div>
+        <div class="row">
+          <label>本地媒體：</label>
+          <input type="file" id="videoFile" accept="video/*,audio/*">
+        </div>
+        <div class="row">
+          <label>本地字幕：</label>
+          <button id="pickSubs" class="btn">選擇字幕檔</button>
+          <span id="subsPicked" class="mono"></span>
+        </div>
+        <div class="row hint">若非 .ass 會自動轉成 .ass。</div>
+      </section>
+
+      <section class="card">
+        <h2>影片播放（同步 overlay 時間軸）</h2>
+        <video id="localVideo" controls></video>
+        <div class="row">
+          <span id="activeCacheInfo" class="mono"></span>
+        </div>
+      </section>
+    </main>
   </div>
-  <div class="row">
-    <small>若遇到 429 或需登入，請提供 cookies。如何匯出 YouTube cookies：<span class="mono">https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies</span></small>
-  </div>
-</fieldset>
-
-  <fieldset>
-    <legend>字幕來源</legend>
-    <div class="row">
-      <label>YouTube 連結：</label>
-      <input type="text" id="ytUrl" placeholder="https://www.youtube.com/watch?v=...">
-      <button id="ytDownload" class="btn">下載影片</button>
-      <button id="ytDownloadAudio" class="btn">下載音訊</button>
-      <button id="ytCancel" class="btn">取消下載</button>
-      <button id="ytFetch" class="btn">僅下載字幕</button>
-      <progress id="dlProg" max="100" value="0" style="display:none"></progress>
-      <span id="dlTxt" class="mono"></span>
-    </div>
-    <div class="row">
-      <label>本地媒體：</label>
-      <input type="file" id="videoFile" accept="video/*,audio/*">
-    </div>
-    <div class="row">
-      <label>本地字幕：</label>
-      <button id="pickSubs" class="btn">選擇字幕檔</button>
-      <span id="subsPicked" class="mono"></span>
-    </div>
-    <div class="row"><small>若非 .ass 會自動轉成 .ass。</small></div>
-
-    <details id="ytLogWrap" style="margin-top:8px">
-      <summary style="cursor:pointer; display:flex; align-items:center; gap:8px; user-select:none">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden style="transition:transform .15s">
-          <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span>yt-dlp 日誌</span>
-      </summary>
-      <pre id="ytLog" style="background:transparent; color:rgb(0,0,0); height:200px; overflow:auto; white-space:pre-wrap; margin:8px 0 0 20px"></pre>
-    </details>
-    <style>
-      /* 讓小圖標在展開時旋轉，隱藏預設 marker */
-      #ytLogWrap[open] summary svg { transform: rotate(90deg); }
-      #ytLogWrap summary::-webkit-details-marker { display: none; }
-    </style></summary>
-  </fieldset>
-
-  <fieldset>
-    <legend>字型</legend>
-    <div class="row">
-      <label>上傳字型：</label>
-      <button id="pickFonts" class="btn">選擇 .ttf/.otf/.woff2</button>
-      <span id="fontsPicked" class="mono"></span>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>顯示樣式</legend>
-    <div class="row"><label>最大寬度(px)：</label><input type="number" id="maxWidth" value="1920"></div>
-    <div class="row"><label>對齊：</label>
-      <select id="align">
-        <option value="left">置左</option>
-        <option value="center" selected>置中</option>
-        <option value="right">置右</option>
-      </select>
-    </div>
-    <div class="row"><label>背景：</label>
-      <select id="background">
-        <option value="transparent" selected>透明</option>
-        <option value="green">綠幕</option>
-      </select>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>輸出（HTTP）</legend>
-    <div class="row">
-      <label>端口(port)：</label>
-      <input type="number" id="port" value="1976">
-      <span class="mono">  →  http://localhost:<span id="portView">1976</span>/overlay</span>
-    </div>
-    <div class="row">
-      <button id="applyToOverlay" class="btn">載入到輸出</button>
-      <span id="applyMsg"></span>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>影片播放（同步 overlay 時間軸）</legend>
-    <video id="localVideo" controls></video>
-    <div class="row">
-      <span id="activeCacheInfo" class="mono"></span>
-    </div>
-  </fieldset>
 
   <script type="module" src="./app.mjs"></script>
 </body>
