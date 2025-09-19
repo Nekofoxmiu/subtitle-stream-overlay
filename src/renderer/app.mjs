@@ -40,14 +40,12 @@ const dom = {
 };
 
 const videoCacheControls = createCacheSelector(dom.videoFile?.closest('.row'), {
-  label: '快取媒體：',
   searchPlaceholder: '搜尋影片或音訊...'
 });
 dom.videoCacheSelect = videoCacheControls?.select || null;
 dom.videoCacheSearch = videoCacheControls?.search || null;
 
 const subsCacheControls = createCacheSelector(dom.pickSubs?.closest('.row'), {
-  label: '快取字幕：',
   searchPlaceholder: '搜尋字幕...'
 });
 dom.subsCacheSelect = subsCacheControls?.select || null;
@@ -162,7 +160,7 @@ function setupEventHandlers() {
     syncOverlayConnection();
   }, 120);
 
-  
+
   dom.pickCookies?.addEventListener('click', handlePickCookies);
   dom.clearCookies?.addEventListener('click', handleClearCookies);
   dom.checkBins?.addEventListener('click', handleCheckBins);
@@ -970,13 +968,15 @@ function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   if (!rowEl || !rowEl.parentElement) return null;
   const container = document.createElement('div');
   container.className = 'row';
-  const labelEl = document.createElement('label');
-  labelEl.textContent = label || '';
-  container.appendChild(labelEl);
+  if (label) {
+    const labelEl = document.createElement('label');
+    labelEl.textContent = label || '';
+    container.appendChild(labelEl);
+  }
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.placeholder = searchPlaceholder || '';
-  searchInput.style.width = '200px';
+  searchInput.style.width = '100%';
   searchInput.style.marginRight = '8px';
   container.appendChild(searchInput);
   const select = document.createElement('select');

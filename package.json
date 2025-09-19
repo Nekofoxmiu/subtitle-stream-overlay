@@ -4,17 +4,29 @@
   "description": "ASS/SRT subtitle overlay (green/transparent) via Electron + SubtitlesOctopus",
   "main": "src/main/main.mjs",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron ."
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
   },
   "author": "Nekofoxball",
   "license": "MIT",
   "dependencies": {
-    "electron": "^38.1.2",
+    "electron-squirrel-startup": "^1.0.1",
     "electron-store": "^10.1.0",
     "express": "^5.1.0",
     "extract-zip": "^2.0.1",
     "node-fetch": "^3.3.2",
     "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.9.0",
+    "@electron-forge/maker-deb": "^7.9.0",
+    "@electron-forge/maker-rpm": "^7.9.0",
+    "@electron-forge/maker-squirrel": "^7.9.0",
+    "@electron-forge/maker-zip": "^7.9.0",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.9.0",
+    "@electron-forge/plugin-fuses": "^7.9.0",
+    "@electron/fuses": "^1.8.0",
+    "electron": "^38.1.2"
   }
 }

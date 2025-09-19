@@ -19,9 +19,10 @@ let overlayServer;
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 780,
+    width: 1200,
+    height: 800,
     show: false,
+    autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
       preload: PRELOAD_PATH
