@@ -2,7 +2,9 @@ const $ = (selector) => document.querySelector(selector);
 
 const dom = {
   binInfo: $('#binInfo'),
+  mainArea: document.querySelector('.main-area'),
   controlCard: $('#controlCard'),
+  previewCard: $('#previewCard'),
   controlToggle: $('#controlCardToggle'),
   previewToggle: $('#previewCardToggle'),
   portInput: $('#port'),
@@ -66,7 +68,8 @@ const state = {
   subsSearch: '',
   objectUrl: '',
   binProgress: new Map(),
-  controlHidden: false
+  controlCollapsed: false,
+  previewCollapsed: false
 };
 
 /* ---------------- Overlay 時間同步 ---------------- */
@@ -107,6 +110,7 @@ const overlaySync = new OverlaySync(dom.video);
 (async function init() {
   setupEventHandlers();
   applyControlVisibility();
+  applyPreviewVisibility();
   await loadInitialConfig();
   await loadBinInfo();
   await refreshCachedEntries();
@@ -190,15 +194,17 @@ function setupEventHandlers() {
   });
 
   dom.controlToggle?.addEventListener('click', () => {
-    if (state.controlHidden) return;
-    setControlHidden(true);
-    dom.previewToggle?.focus();
+    const nextCollapsed = !state.controlCollapsed;
+    setControlCollapsed(nextCollapsed);
+    if (!nextCollapsed) {
+      dom.controlToggle?.focus();
+    }
   });
   dom.previewToggle?.addEventListener('click', () => {
-    const nextHidden = !state.controlHidden;
-    setControlHidden(nextHidden);
-    if (!nextHidden) {
-      dom.controlToggle?.focus();
+    const nextCollapsed = !state.previewCollapsed;
+    setPreviewCollapsed(nextCollapsed);
+    if (!nextCollapsed) {
+      dom.previewToggle?.focus();
     }
   });
 
@@ -228,29 +234,42 @@ function setupEventHandlers() {
   });
 }
 
-function setControlHidden(hidden) {
-  state.controlHidden = Boolean(hidden);
+function setControlCollapsed(collapsed) {
+  state.controlCollapsed = Boolean(collapsed);
   applyControlVisibility();
 }
 
+function setPreviewCollapsed(collapsed) {
+  state.previewCollapsed = Boolean(collapsed);
+  applyPreviewVisibility();
+}
+
 function applyControlVisibility() {
+  const collapsed = state.controlCollapsed;
   const minimizeLabel = '最小化控制區';
   const restoreLabel = '顯示控制區';
-  if (dom.controlCard) {
-    dom.controlCard.classList.toggle('card-collapsed', state.controlHidden);
-  }
+  dom.controlCard?.classList.toggle('card-collapsed', collapsed);
+  dom.mainArea?.classList.toggle('controls-collapsed', collapsed);
   if (dom.controlToggle) {
-    dom.controlToggle.textContent = minimizeLabel;
-    dom.controlToggle.setAttribute('aria-label', minimizeLabel);
+    const label = collapsed ? restoreLabel : minimizeLabel;
+    dom.controlToggle.textContent = label;
+    dom.controlToggle.setAttribute('aria-label', label);
     dom.controlToggle.setAttribute('aria-controls', 'controlCard');
-    dom.controlToggle.setAttribute('aria-expanded', String(!state.controlHidden));
+    dom.controlToggle.setAttribute('aria-expanded', String(!collapsed));
   }
+}
+
+function applyPreviewVisibility() {
+  const collapsed = state.previewCollapsed;
+  const minimizeLabel = '最小化預覽與輸出';
+  const restoreLabel = '顯示預覽與輸出';
+  dom.previewCard?.classList.toggle('card-collapsed', collapsed);
   if (dom.previewToggle) {
-    const label = state.controlHidden ? restoreLabel : minimizeLabel;
+    const label = collapsed ? restoreLabel : minimizeLabel;
     dom.previewToggle.textContent = label;
     dom.previewToggle.setAttribute('aria-label', label);
-    dom.previewToggle.setAttribute('aria-controls', 'controlCard');
-    dom.previewToggle.setAttribute('aria-expanded', String(!state.controlHidden));
+    dom.previewToggle.setAttribute('aria-controls', 'previewCard');
+    dom.previewToggle.setAttribute('aria-expanded', String(!collapsed));
   }
 }
 
