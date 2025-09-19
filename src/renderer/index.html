@@ -15,9 +15,7 @@
   <style>
     :root {
       color-scheme: light;
-      --bg-gradient: radial-gradient(circle at top left, rgba(59, 130, 246, 0.38), transparent 55%),
-        radial-gradient(circle at 20% 80%, rgba(124, 58, 237, 0.32), transparent 55%),
-        #0f172a;
+      --bg-gradient: #0b1120;
       --surface: rgba(255, 255, 255, 0.86);
       --surface-soft: rgba(255, 255, 255, 0.72);
       --text-primary: #0f172a;
@@ -42,7 +40,8 @@
       color: var(--text-primary);
       display: flex;
       justify-content: center;
-      padding: 36px 20px 64px;
+      align-items: stretch;
+      padding: 0;
     }
 
     body.sidebar-open {
@@ -52,10 +51,11 @@
     .app-shell {
       position: relative;
       width: min(1120px, 100%);
+      min-height: 100vh;
       background: var(--surface);
       backdrop-filter: blur(18px);
-      border-radius: var(--radius-lg);
-      box-shadow: 0 40px 80px -40px rgba(15, 23, 42, 0.45), 0 20px 40px -20px rgba(30, 64, 175, 0.25);
+      border-radius: 0;
+      box-shadow: none;
       overflow: hidden;
       display: flex;
       flex-direction: column;
@@ -112,9 +112,67 @@
     .bin-actions {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      align-items: flex-start;
+      gap: 12px;
+      align-items: stretch;
       min-width: 260px;
+    }
+
+    .bin-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .bin-status {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      color: var(--text-secondary);
+      align-items: center;
+    }
+
+    .bin-status-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.16);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .bin-status-item[data-state="ok"] {
+      background: rgba(34, 197, 94, 0.18);
+      color: #15803d;
+    }
+
+    .bin-status-item[data-state="fail"] {
+      background: rgba(248, 113, 113, 0.18);
+      color: #b91c1c;
+    }
+
+    .bin-status-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(148, 163, 184, 0.35);
+      color: var(--text-secondary);
+    }
+
+    .bin-status-item[data-state="ok"] .bin-status-icon {
+      background: rgba(34, 197, 94, 0.2);
+      color: #15803d;
+    }
+
+    .bin-status-item[data-state="fail"] .bin-status-icon {
+      background: rgba(248, 113, 113, 0.22);
+      color: #b91c1c;
     }
 
     .bin-progress {
@@ -277,42 +335,51 @@
 
     select {
       width: 100%;
-      padding: 10px 14px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      background: #fff;
-      color: var(--text-primary);
       font: inherit;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.55);
+      padding: 10px 46px 10px 18px;
+      background-color: rgba(255, 255, 255, 0.85);
+      color: var(--text-primary);
       -webkit-appearance: none;
       -moz-appearance: none;
       appearance: none;
-
-      /* 預留右側空間，避免文字壓到箭頭 */
-      padding-right: 2.5em;
-      /* 依需要調整 */
-
-      /* 自訂箭頭（SVG，可改顏色與大小） */
-      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23555' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+      background-image: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(124, 58, 237, 0.12)),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%231f2937' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
       background-repeat: no-repeat;
-
-      /* 這裡決定箭頭距右邊距離：改 12px 即可「往左移」 */
-      background-position: right 12px center;
-      background-size: 1em auto;
+      background-position: left top, right 16px center;
+      background-size: 100% 100%, 16px;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
     }
 
-    /* 強制色彩模式下恢復原生，避免不可見 */
+    select:focus {
+      outline: none;
+      border-color: rgba(37, 99, 235, 0.75);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+      background-color: rgba(255, 255, 255, 0.95);
+    }
+
+    select:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      background-image: linear-gradient(135deg, rgba(148, 163, 184, 0.18), rgba(148, 163, 184, 0.1)),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%2367748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-position: left top, right 16px center;
+      background-size: 100% 100%, 16px;
+    }
+
     @media (forced-colors: active) {
       select {
         appearance: auto;
         background-image: none;
         padding-right: 14px;
+        border-radius: 12px;
       }
     }
 
 
-    input[type="file"] {
-      font: inherit;
-      color: var(--text-secondary);
+    #videoFile {
+      display: none;
     }
 
     .action-row {
@@ -580,11 +647,11 @@
 
     @media (max-width: 768px) {
       body {
-        padding: 24px 12px 48px;
+        padding: 0;
       }
 
       .app-shell {
-        border-radius: 20px;
+        border-radius: 0;
       }
 
       .brand {
@@ -634,8 +701,19 @@
       </div>
       <div class="top-actions">
         <div class="bin-actions">
-          <button id="checkBins" class="btn primary">檢查 / 下載必要工具</button>
-          <span id="binInfo" class="mono muted">尚未檢查</span>
+          <div class="bin-controls">
+            <button id="checkBins" class="btn primary">檢查 / 下載必要工具</button>
+            <div id="binInfo" class="bin-status">
+              <div class="bin-status-item" data-state="pending">
+                <span id="binStatusYtIcon" class="bin-status-icon" aria-hidden>–</span>
+                <span class="bin-status-text">yt-dlp</span>
+              </div>
+              <div class="bin-status-item" data-state="pending">
+                <span id="binStatusFfmpegIcon" class="bin-status-icon" aria-hidden>–</span>
+                <span class="bin-status-text">ffmpeg</span>
+              </div>
+            </div>
+          </div>
           <div id="binProgressWrap" class="bin-progress hidden">
             <progress id="binProgressBar" max="100"></progress>
             <span id="binProgressLabel" class="mono"></span>
@@ -672,14 +750,16 @@
             </div>
           </div>
           <div class="row">
-            <label for="videoFile">本地媒體</label>
-            <input type="file" id="videoFile" accept="video/*,audio/*">
+            <label for="pickVideo">本地媒體</label>
+            <div class="action-row">
+              <button id="pickVideo" class="btn" type="button">選擇媒體檔</button>
+            </div>
+            <input type="file" id="videoFile" accept="video/*,audio/*" hidden>
           </div>
           <div class="row">
             <label>本地字幕</label>
             <div class="action-row">
               <button id="pickSubs" class="btn">選擇字幕檔</button>
-              <span id="subsPicked" class="mono muted"></span>
             </div>
           </div>
         </div>
