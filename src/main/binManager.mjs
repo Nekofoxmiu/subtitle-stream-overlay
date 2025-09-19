@@ -23,6 +23,20 @@ export function getBinPaths() {
   };
 }
 
+function persistBinPaths(partial = {}) {
+  const current = getBinPaths();
+  const next = {
+    ytDlpPath: Object.prototype.hasOwnProperty.call(partial, 'ytDlpPath')
+      ? partial.ytDlpPath || ''
+      : current.ytDlpPath || '',
+    ffmpegPath: Object.prototype.hasOwnProperty.call(partial, 'ffmpegPath')
+      ? partial.ffmpegPath || ''
+      : current.ffmpegPath || ''
+  };
+  store.set('bins', next);
+  return next;
+}
+
 async function ensureDir(p) { await fs.promises.mkdir(p, { recursive: true }); }
 
 function emitBinProgress(mainWindow, payload) {
@@ -123,6 +137,7 @@ export async function checkAndOfferDownload(mainWindow) {
     await downloadTo(URLS.ytDlpExe, out, 'yt-dlp', { mainWindow, id: 'yt-dlp' });
     ytDlpPath = out;
     markReady('yt-dlp', 'yt-dlp');
+    ({ ytDlpPath, ffmpegPath } = persistBinPaths({ ytDlpPath, ffmpegPath }));
   }
 
   // ffmpeg release essentials zip
@@ -148,8 +163,9 @@ export async function checkAndOfferDownload(mainWindow) {
     }
     ffmpegPath = found;
     markReady('ffmpeg', 'ffmpeg');
+    ({ ytDlpPath, ffmpegPath } = persistBinPaths({ ytDlpPath, ffmpegPath }));
   }
 
-  store.set('bins', { ytDlpPath, ffmpegPath });
+  ({ ytDlpPath, ffmpegPath } = persistBinPaths({ ytDlpPath, ffmpegPath }));
   return { ytDlpPath, ffmpegPath };
 }
