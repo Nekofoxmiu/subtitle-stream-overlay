@@ -892,7 +892,12 @@ export function setupIpc(mainWindow) {
   ipcMain.handle('bins:get', async () => getBinPaths());
 
   ipcMain.handle('config:get', async () => getConfig());
-  ipcMain.handle('config:set', async (_e, patch) => { setConfig(patch); return getConfig(); });
+  ipcMain.handle('config:set', async (_e, patch) => {
+    setConfig(patch);
+    // Notify other main-process modules that config has changed.
+    try { app.emit('config:changed', getConfig()); } catch (err) { /* noop */ }
+    return getConfig();
+  });
 
   ipcMain.handle('dialog:openFiles', async (_e, options) => {
     const r = await dialog.showOpenDialog(mainWindow, { properties: ['openFile', 'multiSelections'], ...options });

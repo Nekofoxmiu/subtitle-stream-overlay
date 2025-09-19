@@ -76,18 +76,6 @@
       align-items: center;
     }
 
-    .brand-icon {
-      width: 52px;
-      height: 52px;
-      border-radius: 16px;
-      background: var(--accent-strong);
-      display: grid;
-      place-items: center;
-      color: #fff;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-    }
-
     .brand h1 {
       margin: 0;
       font-size: 26px;
@@ -796,7 +784,6 @@
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">
-        <div class="brand-icon">SO</div>
         <div>
           <h1>Subtitle Overlay</h1>
         </div>
@@ -995,10 +982,10 @@
         <div class="accordion-content">
           <div class="row">
             <label for="port">端口 (port)</label>
-            <input type="number" id="port" value="1976" min="1" max="65535">
+            <input type="number" id="port" value="59777" min="1" max="65535">
           </div>
-          <small>以 OBS Browser Source 指向 <span class="mono">http://localhost:<span
-                id="portView">1976</span>/overlay</span></small>
+          <small>要修改的話推薦 49152-65535<br>以 OBS Browser Source 指向 <span class="mono">http://localhost:<span
+                id="portView">59777</span>/overlay</span></small>
         </div>
       </details>
 

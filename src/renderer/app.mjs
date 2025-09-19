@@ -93,7 +93,7 @@ class OverlaySync {
   constructor(videoEl) {
     this.ws = null;
     this.timer = null;
-    this.port = 1976;
+    this.port = 59777;
     this.video = videoEl;
   }
   connect(port) {
@@ -277,14 +277,30 @@ function setupEventHandlers() {
     persistVolumeSetting(volume);
   });
 
-  ['background', 'align', 'maxWidth', 'port'].forEach((id) => {
+  // Sync style on change for most controls, but handle `port` specially
+  ['background', 'align', 'maxWidth'].forEach((id) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener('change', debouncedSyncStyle);
-    if (el.tagName === 'INPUT') {
-      el.addEventListener('input', debouncedSyncStyle);
-    }
+    if (el.tagName === 'INPUT') el.addEventListener('input', debouncedSyncStyle);
   });
+
+  // Port should only apply on blur or when the user presses Enter.
+  const portEl = document.getElementById('port');
+  if (portEl) {
+    portEl.addEventListener('blur', async () => {
+      const style = collectStyle();
+      await persistStyle(style);
+      window.api.notifyOverlay({ style });
+      syncOverlayConnection();
+    });
+    portEl.addEventListener('keydown', async (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        portEl.blur(); // trigger blur handler which does the actual sync
+      }
+    });
+  }
 
   dom.portInput?.addEventListener('input', () => {
     dom.portView.textContent = dom.portInput.value || '';
@@ -1197,7 +1213,7 @@ function clampVolume(value) {
 /* ---------------- 樣式設定 ---------------- */
 function getCurrentPort() {
   const port = parseInt(dom.portInput?.value, 10);
-  return Number.isFinite(port) ? port : 1976;
+  return Number.isFinite(port) ? port : 59777;
 }
 
 function collectStyle() {
