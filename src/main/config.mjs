@@ -13,7 +13,8 @@ export const store = new Store({
       wrapStyle: 2
     },
     // 新增：cookies 路徑（Netscape cookies.txt）
-    cookiesPath: ''
+    cookiesPath: '',
+    downloads: []
   }
 });
 
