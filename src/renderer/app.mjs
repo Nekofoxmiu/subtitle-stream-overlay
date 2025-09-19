@@ -658,30 +658,54 @@ async function handleLocalFileSelected(ev) {
   if (!file) return;
   const filePath = typeof file.path === 'string' ? file.path : '';
   const title = stripFileExtension(file.name || '');
-  if (filePath) {
-    try {
-      const entry = await window.api.importLocalToCache({
-        videoPath: filePath,
-        videoTitle: title || file.name || '',
-        title: title || file.name || ''
-      });
-      if (entry) {
-        const merged = upsertCacheEntry(entry);
-        if (merged?.hasVideo && merged.videoFilename) {
-          state.activeVideoId = merged.id;
-          updateVideoCacheSelect(merged.id);
-          await loadVideoEntry(merged);
-          updateActiveCacheInfo({ video: merged, subs: getEntryById(state.activeSubsId) });
-        } else {
-          updateVideoCacheSelect(state.activeVideoId);
-        }
-        ev.target.value = '';
-        return;
-      }
-    } catch (err) {
-      console.error('[cache] 匯入本地媒體失敗', err);
-      alert('匯入本地媒體失敗：' + (err?.message || err));
+
+  const attemptImport = async ({ useFilePayload }) => {
+    const payload = {
+      videoTitle: title || file.name || '',
+      title: title || file.name || ''
+    };
+    if (filePath && !useFilePayload) payload.videoPath = filePath;
+    if (useFilePayload) {
+      const fileData = await buildFilePayload(file);
+      if (fileData) payload.videoFile = fileData;
     }
+    if (!payload.videoPath && !payload.videoFile) return null;
+    return await window.api.importLocalToCache(payload);
+  };
+
+  let entry = null;
+  let importError = null;
+  try {
+    if (filePath) entry = await attemptImport({ useFilePayload: false });
+  } catch (err) {
+    importError = err;
+  }
+
+  if (!entry) {
+    try {
+      entry = await attemptImport({ useFilePayload: true });
+    } catch (err) {
+      importError = err;
+    }
+  }
+
+  if (entry) {
+    const merged = upsertCacheEntry(entry);
+    if (merged?.hasVideo && merged.videoFilename) {
+      state.activeVideoId = merged.id;
+      updateVideoCacheSelect(merged.id);
+      await loadVideoEntry(merged);
+      updateActiveCacheInfo({ video: merged, subs: getEntryById(state.activeSubsId) });
+    } else {
+      updateVideoCacheSelect(state.activeVideoId);
+    }
+    ev.target.value = '';
+    return;
+  }
+
+  if (importError) {
+    console.error('[cache] 匯入本地媒體失敗', importError);
+    alert('匯入本地媒體失敗：' + (importError?.message || importError));
   }
 
   const url = URL.createObjectURL(file);
@@ -783,4 +807,15 @@ function stripFileExtension(name = '') {
   const idx = name.lastIndexOf('.');
   if (idx <= 0) return name;
   return name.slice(0, idx);
+}
+
+async function buildFilePayload(file) {
+  if (!file) return null;
+  try {
+    const data = await file.arrayBuffer();
+    return { name: file.name || '', data };
+  } catch (err) {
+    console.error('[cache] 讀取本地媒體失敗', err);
+    return null;
+  }
 }
