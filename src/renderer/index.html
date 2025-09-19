@@ -273,10 +273,6 @@
       gap: 24px;
     }
 
-    .main-area.controls-collapsed {
-      grid-template-columns: 1fr;
-    }
-
     .card {
       background: var(--surface-soft);
       border-radius: var(--radius-md);
@@ -288,17 +284,7 @@
     }
 
     .card.card-collapsed {
-      gap: 0;
-    }
-
-    .card.card-collapsed .card-body {
       display: none;
-    }
-
-    .card-body {
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
     }
 
     .card-header {
@@ -695,10 +681,6 @@
       .main-area {
         grid-template-columns: 1.4fr 1fr;
       }
-
-      .main-area.controls-collapsed {
-        grid-template-columns: 1fr;
-      }
     }
 
     @media (max-width: 768px) {
@@ -789,7 +771,7 @@
             <button id="controlCardToggle" class="btn ghost small" type="button">最小化控制區</button>
           </div>
         </header>
-        <div class="stack card-body">
+        <div class="stack">
           <div class="row">
             <div class="field-body">
               <input type="text" id="ytUrl" placeholder="https://www.youtube.com/watch?v=...">
@@ -829,18 +811,16 @@
             <p>確認字幕同步後，將設定套用到 overlay。</p>
           </div>
           <div class="card-header-actions">
-            <button id="previewCardToggle" class="btn ghost small" type="button">最小化預覽與輸出</button>
+            <button id="previewCardToggle" class="btn ghost small" type="button">最小化控制區</button>
           </div>
         </header>
-        <div class="card-body">
-          <div class="preview-area">
-            <video id="localVideo" controls></video>
-            <div id="activeCacheInfo" class="info-line mono"></div>
-          </div>
-          <div class="apply-row">
-            <button id="applyToOverlay" class="btn primary">套用到 Overlay</button>
-            <span id="applyMsg"></span>
-          </div>
+        <div class="preview-area">
+          <video id="localVideo" controls></video>
+          <div id="activeCacheInfo" class="info-line mono"></div>
+        </div>
+        <div class="apply-row">
+          <button id="applyToOverlay" class="btn primary">套用到 Overlay</button>
+          <span id="applyMsg"></span>
         </div>
       </section>
     </main>
