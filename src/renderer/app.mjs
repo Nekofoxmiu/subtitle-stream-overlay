@@ -20,6 +20,7 @@ const dom = {
   pickSubs: $('#pickSubs'),
   pickFonts: $('#pickFonts'),
   ytDownload: $('#ytDownload'),
+  ytDownloadAudio: $('#ytDownloadAudio'),
   ytCancel: $('#ytCancel'),
   ytFetch: $('#ytFetch'),
   background: $('#background'),
@@ -35,6 +36,7 @@ const state = {
   currentAssText: '',
   currentFonts: [],
   jobId: null,
+  activeDownloadMode: null,
   cachedEntries: [], // { id, title, videoFilename, subsFilename, ... }
   activeCacheId: '',
   objectUrl: ''
@@ -139,6 +141,7 @@ function setupEventHandlers() {
   dom.pickFonts?.addEventListener('click', handlePickFonts);
   dom.ytFetch?.addEventListener('click', handleFetchSubsOnly);
   dom.ytDownload?.addEventListener('click', handleDownloadVideo);
+  dom.ytDownloadAudio?.addEventListener('click', handleDownloadAudio);
   dom.ytCancel?.addEventListener('click', handleCancelDownload);
   dom.videoFile?.addEventListener('change', handleLocalFileSelected);
   dom.downloadedSelect?.addEventListener('change', handleDownloadedSelectChange);
@@ -201,7 +204,7 @@ function showDownloadProgress(show) {
   }
 }
 
-async function handleDownloadVideo() {
+async function startYtDownload({ type = 'video' } = {}) {
   const url = dom.ytUrl?.value.trim();
   if (!url) {
     alert('請輸入 YouTube 連結');
@@ -209,12 +212,23 @@ async function handleDownloadVideo() {
   }
   showDownloadProgress(true);
   try {
-    const { jobId } = await window.api.ytdlpDownloadVideo({ url });
+    const fn = type === 'audio' ? window.api.ytdlpDownloadAudio : window.api.ytdlpDownloadVideo;
+    const { jobId } = await fn({ url });
     state.jobId = jobId;
+    state.activeDownloadMode = type;
   } catch (err) {
+    state.activeDownloadMode = null;
     showDownloadProgress(false);
     alert(err?.message || String(err));
   }
+}
+
+async function handleDownloadVideo() {
+  await startYtDownload({ type: 'video' });
+}
+
+async function handleDownloadAudio() {
+  await startYtDownload({ type: 'audio' });
 }
 
 async function handleCancelDownload() {
@@ -226,6 +240,7 @@ async function handleCancelDownload() {
     alert(err?.message || String(err));
   } finally {
     state.jobId = null;
+    state.activeDownloadMode = null;
     showDownloadProgress(false);
   }
 }
@@ -244,11 +259,21 @@ function handleYtProgress(ev) {
 
   if (ev.type === 'progress') {
     if (dom.dlProg) dom.dlProg.value = ev.percent || 0;
-    if (dom.dlTxt) dom.dlTxt.textContent = `${(ev.percent || 0).toFixed(1)}% ${ev.speed || ''} ${ev.eta || ''}`.trim();
+    if (dom.dlTxt) {
+      const base = `${(ev.percent || 0).toFixed(1)}% ${ev.speed || ''} ${ev.eta || ''}`.trim();
+      if (state.activeDownloadMode) {
+        const label = state.activeDownloadMode === 'audio' ? '音訊' : '影片';
+        dom.dlTxt.textContent = `[${label}] ${base}`;
+      } else {
+        dom.dlTxt.textContent = base;
+      }
+    }
   } else if (ev.type === 'done') {
     handleDownloadDone(ev);
   } else if (ev.type === 'error') {
     showDownloadProgress(false);
+    state.jobId = null;
+    state.activeDownloadMode = null;
     alert('下載失敗：' + (ev.message || '未知錯誤'));
   }
 }
@@ -256,9 +281,16 @@ function handleYtProgress(ev) {
 function handleDownloadDone(payload) {
   showDownloadProgress(false);
   state.jobId = null;
+  state.activeDownloadMode = null;
+  const mode = typeof payload === 'object' ? payload?.mode : null;
+  const label = mode === 'audio' ? '音訊' : '影片';
   const filename = typeof payload === 'string' ? payload : payload?.filename;
-  if (filename) appendLog(`[done] ${filename}`);
   const entry = typeof payload === 'object' ? payload?.entry : null;
+  if (filename) {
+    appendLog(`[done:${label}] ${filename}`);
+  } else if (entry) {
+    appendLog(`[done:${label}] ${describeCacheEntry(entry)}`);
+  }
   if (entry) {
     const merged = upsertCacheEntry(entry);
     updateDownloadedSelect(merged?.id);
@@ -409,6 +441,27 @@ async function handlePickSubs() {
   } else {
     dom.subsPicked.textContent = path;
   }
+  const subsTitle = stripFileExtension(path.split(/[\\/]/).pop() || '');
+  const payload = { subsPath: path };
+  if (subsTitle) payload.subsTitle = subsTitle;
+  if (state.activeCacheId) payload.id = state.activeCacheId;
+  else if (subsTitle) payload.title = subsTitle;
+
+  try {
+    const entry = await window.api.importLocalToCache(payload);
+    if (entry) {
+      const merged = upsertCacheEntry(entry);
+      updateDownloadedSelect(merged?.id);
+      dom.subsPicked.textContent = entry.subsPath || path;
+      await activateCacheEntry(merged, { setSelectValue: true });
+      return;
+    }
+  } catch (err) {
+    console.error('[cache] 匯入字幕失敗', err);
+    alert('匯入字幕失敗：' + (err?.message || err));
+  }
+
+  dom.subsPicked.textContent = path;
   try {
     await loadAssIntoOverlay(path);
   } catch (err) {
@@ -459,16 +512,39 @@ function setBinInfo(bins) {
 }
 
 /* ---------------- 本地影片 ---------------- */
-function handleLocalFileSelected(ev) {
+async function handleLocalFileSelected(ev) {
   const file = ev.target.files?.[0];
   if (!file) return;
+  const filePath = typeof file.path === 'string' ? file.path : '';
+  const title = stripFileExtension(file.name || '');
+  if (filePath) {
+    try {
+      const entry = await window.api.importLocalToCache({
+        videoPath: filePath,
+        videoTitle: title || file.name || '',
+        title: title || file.name || ''
+      });
+      if (entry) {
+        const merged = upsertCacheEntry(entry);
+        updateDownloadedSelect(merged?.id);
+        await activateCacheEntry(merged, { setSelectValue: true });
+        ev.target.value = '';
+        return;
+      }
+    } catch (err) {
+      console.error('[cache] 匯入本地媒體失敗', err);
+      alert('匯入本地媒體失敗：' + (err?.message || err));
+    }
+  }
+
   const url = URL.createObjectURL(file);
-  if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
+  releaseObjectUrl();
   state.objectUrl = url;
   state.activeCacheId = '';
   updateDownloadedSelect('');
   if (dom.activeCacheInfo) dom.activeCacheInfo.textContent = `本地媒體：${file.name}`;
   playVideo(url);
+  ev.target.value = '';
 }
 
 function handleDownloadedSelectChange() {
@@ -571,7 +647,14 @@ function createDownloadedSelect(rowEl) {
   rowEl.appendChild(select);
   const hint = document.createElement('small');
   hint.style.marginLeft = '8px';
-  hint.textContent = '（快取的影片 / 字幕會出現在此，便於快速載入）';
+  hint.textContent = '（快取的影片 / 音訊 / 字幕會出現在此，便於快速載入）';
   rowEl.appendChild(hint);
   return select;
+}
+
+function stripFileExtension(name = '') {
+  if (!name) return '';
+  const idx = name.lastIndexOf('.');
+  if (idx <= 0) return name;
+  return name.slice(0, idx);
 }

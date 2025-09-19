@@ -9,7 +9,100 @@ import { updateOverlayState } from './main.mjs';
 let dlSeq = 0;
 const running = new Map(); // jobId -> child
 
-const AUDIO_EXTS = new Set(['.mp3', '.m4a', '.aac', '.flac', '.wav', '.ogg', '.opus', '.wma']);
+const AUDIO_EXTS = new Set(['.mp3', '.m4a', '.aac', '.flac', '.wav', '.ogg', '.opus', '.wma', '.webm']);
+
+const INVALID_FILENAME_CHARS = /[\\/:*?"<>|]/g;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+
+function sanitizeFilenameSegment(value = '') {
+  if (!value) return '';
+  return value
+    .normalize('NFKC')
+    .replace(CONTROL_CHARS, '')
+    .replace(INVALID_FILENAME_CHARS, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/[\. ]+$/g, '')
+    .trim()
+    .slice(0, 180);
+}
+
+function buildCacheBasename({ title, id, fallbackPrefix = 'entry' } = {}) {
+  const safeTitle = sanitizeFilenameSegment(title);
+  const safeId = sanitizeFilenameSegment(id);
+  let base = safeTitle;
+  if (safeId) {
+    base = base ? `${base} [${safeId}]` : safeId;
+  }
+  if (!base) {
+    base = `${fallbackPrefix}_${Date.now()}`;
+  }
+  return base.slice(0, 200);
+}
+
+async function ensureUniqueFilename(dir, base, ext, currentPath = null) {
+  const safeExt = ext ? (ext.startsWith('.') ? ext : `.${ext}`) : '';
+  const initialBase = base && base.trim() ? base : 'entry';
+  let candidateBase = initialBase;
+  let index = 1;
+  while (true) {
+    const candidate = `${candidateBase}${safeExt}`;
+    const targetPath = path.join(dir, candidate);
+    if (currentPath && path.resolve(currentPath) === targetPath) {
+      return { filename: candidate, filePath: targetPath };
+    }
+    try {
+      await fs.access(targetPath);
+      index += 1;
+      candidateBase = `${initialBase} (${index})`;
+    } catch {
+      return { filename: candidate, filePath: targetPath };
+    }
+  }
+}
+
+async function ingestFileIntoCache(sourcePath, {
+  dir,
+  title,
+  id,
+  fallbackPrefix = 'entry',
+  defaultExt = '',
+  move = false
+} = {}) {
+  if (!sourcePath) throw new Error('sourcePath is required');
+  if (!dir) throw new Error('target dir is required');
+  await ensureDir(dir);
+  const resolvedSource = path.resolve(sourcePath);
+  const stat = await fs.stat(resolvedSource);
+  if (!stat.isFile()) throw new Error('sourcePath is not a file');
+  let ext = path.extname(resolvedSource);
+  if (!ext && defaultExt) {
+    ext = defaultExt.startsWith('.') ? defaultExt : `.${defaultExt}`;
+  }
+  const base = buildCacheBasename({ title, id, fallbackPrefix });
+  const { filename, filePath } = await ensureUniqueFilename(dir, base, ext, move ? resolvedSource : null);
+  if (path.resolve(resolvedSource) === filePath) {
+    return { filename, filePath };
+  }
+  if (move) {
+    try {
+      await fs.rename(resolvedSource, filePath);
+    } catch (err) {
+      try {
+        await fs.copyFile(resolvedSource, filePath);
+        await fs.unlink(resolvedSource).catch(() => { });
+      } catch (copyErr) {
+        throw copyErr instanceof Error ? copyErr : err;
+      }
+    }
+  } else {
+    await fs.copyFile(resolvedSource, filePath);
+  }
+  return { filename, filePath };
+}
+
+function generateEntryId(prefix = 'entry') {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 const getVideoCacheDir = () => path.join(app.getPath('userData'), 'video-cache');
 const getSubsCacheDir = () => path.join(app.getPath('userData'), 'subs-cache');
@@ -127,28 +220,55 @@ async function upsertDownloadEntry(patch = {}) {
   return buildDownloadEntry(merged);
 }
 
-async function registerVideoDownload({ id, title, filename }) {
-  if (!filename) return null;
-  await ensureDir(getVideoCacheDir());
-  return upsertDownloadEntry({ id, title, videoFilename: filename });
+async function registerVideoDownload({ id, title, filename, sourcePath, keepSource = false }) {
+  const cacheDir = getVideoCacheDir();
+  await ensureDir(cacheDir);
+  let finalFilename = filename;
+  if (sourcePath) {
+    const { filename: storedName } = await ingestFileIntoCache(sourcePath, {
+      dir: cacheDir,
+      title,
+      id,
+      fallbackPrefix: 'video',
+      move: !keepSource
+    });
+    finalFilename = storedName;
+  } else if (filename) {
+    const existingPath = path.join(cacheDir, filename);
+    const { filename: normalizedName } = await ingestFileIntoCache(existingPath, {
+      dir: cacheDir,
+      title,
+      id,
+      fallbackPrefix: 'video',
+      move: true
+    });
+    finalFilename = normalizedName;
+  } else {
+    return null;
+  }
+  const patch = { videoFilename: finalFilename };
+  if (id) patch.id = id;
+  if (title) patch.title = title;
+  return upsertDownloadEntry(patch);
 }
 
-async function registerSubtitleDownload({ id, title, sourcePath }) {
+async function registerSubtitleDownload({ id, title, sourcePath, keepSource = false }) {
   if (!sourcePath) return null;
   const subsDir = getSubsCacheDir();
-  await ensureDir(subsDir);
-  const ext = path.extname(sourcePath) || '.ass';
-  const normalizedName = id ? `${id}${ext}` : path.basename(sourcePath);
-  const targetPath = path.join(subsDir, normalizedName);
-  try {
-    if (path.resolve(sourcePath) !== targetPath) {
-      await fs.copyFile(sourcePath, targetPath);
-      await fs.unlink(sourcePath).catch(() => { });
-    } else if (path.basename(sourcePath) !== normalizedName) {
-      await fs.rename(sourcePath, targetPath);
-    }
-  } catch { }
-  return upsertDownloadEntry({ id, title, subsFilename: path.basename(targetPath) });
+  const resolvedSource = path.resolve(sourcePath);
+  const move = !keepSource && path.dirname(resolvedSource) === subsDir;
+  const { filename: storedName } = await ingestFileIntoCache(resolvedSource, {
+    dir: subsDir,
+    title,
+    id,
+    fallbackPrefix: 'subtitle',
+    defaultExt: '.ass',
+    move
+  });
+  const patch = { subsFilename: storedName };
+  if (id) patch.id = id;
+  if (title) patch.title = title;
+  return upsertDownloadEntry(patch);
 }
 
 function run(cmd, args, opts = {}) {
@@ -159,6 +279,142 @@ function run(cmd, args, opts = {}) {
     p.stderr.on('data', d => err += d.toString());
     p.on('close', code => code === 0 ? resolve({ code, out, err }) : reject(new Error(err || `exit ${code}`)));
   });
+}
+
+async function startYtDlpJob(event, {
+  url,
+  mode = 'video',
+  mergeFormat = 'mp4',
+  audioFormat = 'm4a'
+} = {}) {
+  if (!url) throw new Error('缺少 URL');
+  const { ytDlpPath, ffmpegPath } = getBinPaths();
+  if (!ytDlpPath) throw new Error('yt-dlp 未設定');
+
+  const cfg = getConfig();
+  const cookiesPath = cfg.cookiesPath || '';
+
+  const mergeFmt = typeof mergeFormat === 'string' && mergeFormat.trim() ? mergeFormat.trim() : 'mp4';
+  const audioFmt = typeof audioFormat === 'string' ? audioFormat.trim() : '';
+
+  const jobId = `job_${Date.now()}_${++dlSeq}`;
+  const cacheDir = getVideoCacheDir();
+  await ensureDir(cacheDir);
+
+  const metaPrefix = '__meta__';
+  const formatSel = mode === 'audio'
+    ? 'bestaudio/best'
+    : "bv*[vcodec~='^(avc1|h264)']+ba/best";
+  const cookiesArgs = cookiesPath ? ['--cookies', cookiesPath] : [];
+  const ffmpegArgs = ffmpegPath ? ['--ffmpeg-location', ffmpegPath] : [];
+  const modeArgs = mode === 'audio'
+    ? ['-f', formatSel, '--extract-audio', '--audio-quality', '0', ...(audioFmt ? ['--audio-format', audioFmt] : [])]
+    : ['-f', formatSel, '--merge-output-format', mergeFmt];
+
+  const args = [
+    ...cookiesArgs,
+    ...modeArgs,
+    '--no-playlist',
+    ...ffmpegArgs,
+    '--output', path.join(cacheDir, '%(id)s.%(ext)s'),
+    '--print', `${metaPrefix}id=%(id)s`,
+    '--print', `${metaPrefix}title=%(title)s`,
+    '--print', 'after_move:filepath',
+    url
+  ];
+
+  const child = spawn(ytDlpPath, args, { windowsHide: true, shell: false });
+  running.set(jobId, child);
+
+  const send = (payload) => {
+    try { event.sender.send('ytdlp:progress', payload); } catch { }
+  };
+
+  let finalFile = '';
+  let videoId = '';
+  let videoTitle = '';
+  const reProg = /\[download\]\s+([\d.]+)%.*?at\s+([\d.]+\w+\/s).*?ETA\s+([\d:]+)/i;
+  const reDest = /Destination:\s+(.+)\r?$/i;
+  const reMerging = /\[Merger\]\s+Merging formats into\s+"(.+)"\r?$/i;
+  const reExtractDst = /\[ExtractAudio\]\s+Destination:\s+(.+)\r?$/i;
+
+  const considerChunk = (chunk, stream) => {
+    const text = chunk.toString();
+    text.split(/\r?\n/).forEach((lineRaw) => {
+      if (!lineRaw) return;
+      const trimmed = lineRaw.trim();
+      if (!trimmed) return;
+      if (trimmed.startsWith(metaPrefix)) {
+        const rest = trimmed.slice(metaPrefix.length);
+        const eq = rest.indexOf('=');
+        if (eq > 0) {
+          const key = rest.slice(0, eq);
+          const value = rest.slice(eq + 1);
+          if (key === 'id' && !videoId) videoId = value;
+          if (key === 'title' && !videoTitle) videoTitle = value;
+        }
+        return;
+      }
+
+      const mP = lineRaw.match(reProg);
+      if (mP) {
+        send({ jobId, type: 'progress', percent: Number(mP[1]), speed: mP[2], eta: mP[3] });
+      }
+
+      const m1 = lineRaw.match(reMerging) || lineRaw.match(reExtractDst) || lineRaw.match(reDest);
+      if (m1 && !finalFile) finalFile = m1[1];
+
+      if (!finalFile && trimmed.length > 0) {
+        if (trimmed.startsWith(cacheDir) || /^[A-Za-z]:\\/.test(trimmed) || trimmed.startsWith('/')) {
+          finalFile = trimmed;
+        }
+      }
+
+      send({ jobId, type: 'log', stream, line: lineRaw });
+    });
+  };
+
+  child.stdout.on('data', (d) => considerChunk(d, 'stdout'));
+  child.stderr.on('data', (d) => considerChunk(d, 'stderr'));
+
+  child.on('close', async (code) => {
+    running.delete(jobId);
+    if (code === 0) {
+      if (!finalFile) {
+        try {
+          const list = await fs.readdir(cacheDir);
+          const stats = await Promise.all(list.map(async f => {
+            const p = path.join(cacheDir, f);
+            const st = await fs.stat(p);
+            return { p, mtime: st.mtimeMs, isFile: st.isFile() };
+          }));
+          const cand = stats.filter(x => x.isFile).sort((a, b) => b.mtime - a.mtime)[0];
+          if (cand) finalFile = cand.p;
+        } catch { }
+      }
+      if (finalFile) {
+        const filename = path.basename(finalFile);
+        let entry = null;
+        try {
+          entry = await registerVideoDownload({
+            id: videoId || path.parse(filename).name,
+            title: videoTitle,
+            filename
+          });
+        } catch (err) {
+          console.error('[ytdlp] registerVideoDownload failed', err);
+        }
+        const normalizedName = entry?.videoFilename || filename;
+        send({ jobId, type: 'done', filename: normalizedName, entry, mode });
+      } else {
+        send({ jobId, type: 'error', message: '下載完成但無法定位輸出檔案（可能為舊版 yt-dlp 異常輸出）' });
+      }
+    } else {
+      send({ jobId, type: 'error', message: `yt-dlp 退出碼 ${code}` });
+    }
+  });
+
+  return { jobId };
 }
 
 export function setupIpc(mainWindow) {
@@ -193,6 +449,79 @@ export function setupIpc(mainWindow) {
   });
 
   ipcMain.handle('cache:list', async () => listDownloadEntries());
+
+  ipcMain.handle('cache:importLocal', async (_e, payload = {}) => {
+    const {
+      id,
+      videoPath,
+      videoTitle,
+      subsPath,
+      subsTitle,
+      title
+    } = payload || {};
+
+    const videoPathStr = typeof videoPath === 'string' ? videoPath : '';
+    const subsPathStr = typeof subsPath === 'string' ? subsPath : '';
+    if (!videoPathStr && !subsPathStr) {
+      throw new Error('缺少匯入檔案');
+    }
+
+    const normalize = (val) => (typeof val === 'string' ? val.trim() : '');
+    const baseTitle = normalize(title);
+    const videoBaseTitle = normalize(videoTitle) || (videoPathStr ? path.parse(videoPathStr).name : '');
+    const subsBaseTitle = normalize(subsTitle) || (subsPathStr ? path.parse(subsPathStr).name : '');
+
+    const existingRaw = id ? readDownloadStore().find((item) => item?.id === id) : null;
+    let entryId = id || existingRaw?.id || generateEntryId('local');
+    let effectiveTitle = normalize(existingRaw?.title) || baseTitle || videoBaseTitle || subsBaseTitle;
+    let entry = null;
+
+    if (videoPathStr) {
+      const titleForVideo = effectiveTitle || videoBaseTitle || subsBaseTitle;
+      try {
+        entry = await registerVideoDownload({
+          id: entryId,
+          title: titleForVideo || undefined,
+          sourcePath: videoPathStr,
+          keepSource: true
+        });
+        if (entry?.id) entryId = entry.id;
+        if (entry?.title) effectiveTitle = entry.title;
+      } catch (err) {
+        throw new Error(`匯入媒體失敗：${err?.message || err}`);
+      }
+    }
+
+    if (subsPathStr) {
+      const titleForSubs = effectiveTitle || subsBaseTitle || videoBaseTitle;
+      try {
+        entry = await registerSubtitleDownload({
+          id: entryId,
+          title: titleForSubs || undefined,
+          sourcePath: subsPathStr,
+          keepSource: true
+        });
+        if (entry?.id) entryId = entry.id;
+        if (entry?.title) effectiveTitle = entry.title;
+      } catch (err) {
+        throw new Error(`匯入字幕失敗：${err?.message || err}`);
+      }
+    }
+
+    if (!entry && existingRaw) {
+      entry = await buildDownloadEntry(existingRaw);
+    }
+
+    if (!entry) {
+      const patch = { id: entryId };
+      if (effectiveTitle) patch.title = effectiveTitle;
+      entry = await upsertDownloadEntry(patch);
+    } else if (effectiveTitle && entry.title !== effectiveTitle) {
+      entry = await upsertDownloadEntry({ id: entry.id, title: effectiveTitle });
+    }
+
+    return entry;
+  });
 
   // 下載 YouTube 字幕（不抓影片）
   ipcMain.handle('ytdlp:fetchSubs', async (_e, { url, langs = 'zh-Hant,zh-Hans,zh-TW,zh,en.*' }) => {
@@ -269,126 +598,12 @@ export function setupIpc(mainWindow) {
   });
 
 
-  ipcMain.handle('ytdlp:downloadVideo', async (e, { url, format = 'mp4' }) => {
-    if (!url) throw new Error('缺少 URL');
-    const { ytDlpPath, ffmpegPath } = getBinPaths();
-    if (!ytDlpPath) throw new Error('yt-dlp 未設定');
+  ipcMain.handle('ytdlp:downloadVideo', (e, { url, format = 'mp4' } = {}) => {
+    return startYtDlpJob(e, { url, mode: 'video', mergeFormat: format });
+  });
 
-    const cfg = getConfig();
-    const cookiesPath = cfg.cookiesPath || '';
-
-    const jobId = `job_${Date.now()}_${++dlSeq}`;
-    const cacheDir = getVideoCacheDir();
-    await ensureDir(cacheDir);
-
-    // 盡量拿到 h264+aac 的 mp4；取不到再交由 yt-dlp fallback
-    const formatSel = "bv*[vcodec~='^(avc1|h264)']+ba/best";
-
-    // 優先用 --print after_move:filepath 拿最終輸出路徑（舊版不支援會忽略）
-    const metaPrefix = '__meta__';
-    const args = [
-      ...(cookiesPath ? ['--cookies', cookiesPath] : []),
-      '-f', formatSel,
-      '--merge-output-format', format,
-      '--no-playlist',
-      ...(ffmpegPath ? ['--ffmpeg-location', ffmpegPath] : []),
-      '--output', path.join(cacheDir, '%(id)s.%(ext)s'),
-      '--print', `${metaPrefix}id=%(id)s`,
-      '--print', `${metaPrefix}title=%(title)s`,
-      '--print', 'after_move:filepath',   // 新：合併/移動後的最終檔路徑
-      url
-    ];
-
-    const child = spawn(ytDlpPath, args, { windowsHide: true, shell: false });
-    running.set(jobId, child);
-
-    const send = (payload) => { try { e.sender.send('ytdlp:progress', payload); } catch { } };
-
-    let finalFile = '';
-    let videoId = '';
-    let videoTitle = '';
-    const reProg = /\[download\]\s+([\d.]+)%.*?at\s+([\d.]+\w+\/s).*?ETA\s+([\d:]+)/i;
-    const reDest = /Destination:\s+(.+)\r?$/i;
-    const reMerging = /\[Merger\]\s+Merging formats into\s+"(.+)"\r?$/i;
-    const reExtractDst = /\[ExtractAudio\]\s+Destination:\s+(.+)\r?$/i;
-
-    const considerChunk = (chunk, stream) => {
-      const text = chunk.toString();
-      text.split(/\r?\n/).forEach((lineRaw) => {
-        if (!lineRaw) return;
-        const trimmed = lineRaw.trim();
-        if (!trimmed) return;
-        if (trimmed.startsWith(metaPrefix)) {
-          const rest = trimmed.slice(metaPrefix.length);
-          const eq = rest.indexOf('=');
-          if (eq > 0) {
-            const key = rest.slice(0, eq);
-            const value = rest.slice(eq + 1);
-            if (key === 'id' && !videoId) videoId = value;
-            if (key === 'title' && !videoTitle) videoTitle = value;
-          }
-          return;
-        }
-
-        const mP = lineRaw.match(reProg);
-        if (mP) {
-          send({ jobId, type: 'progress', percent: Number(mP[1]), speed: mP[2], eta: mP[3] });
-        }
-
-        const m1 = lineRaw.match(reMerging) || lineRaw.match(reExtractDst) || lineRaw.match(reDest);
-        if (m1 && !finalFile) finalFile = m1[1];
-
-        if (!finalFile && trimmed.length > 0) {
-          if (trimmed.startsWith(cacheDir) || /^[A-Za-z]:\\/.test(trimmed) || trimmed.startsWith('/')) {
-            finalFile = trimmed;
-          }
-        }
-
-        send({ jobId, type: 'log', stream, line: lineRaw });
-      });
-    };
-
-    child.stdout.on('data', (d) => considerChunk(d, 'stdout'));
-    child.stderr.on('data', (d) => considerChunk(d, 'stderr'));
-
-    child.on('close', async (code) => {
-      running.delete(jobId);
-      if (code === 0) {
-        // 若仍無 finalFile，嘗試以「最近修改檔」推斷
-        if (!finalFile) {
-          try {
-            const list = await fs.readdir(cacheDir);
-            const stats = await Promise.all(list.map(async f => {
-              const p = path.join(cacheDir, f);
-              const st = await fs.stat(p);
-              return { p, mtime: st.mtimeMs, isFile: st.isFile() };
-            }));
-            const cand = stats.filter(x => x.isFile).sort((a, b) => b.mtime - a.mtime)[0];
-            if (cand) finalFile = cand.p;
-          } catch { }
-        }
-        if (finalFile) {
-          const filename = path.basename(finalFile);
-          let entry = null;
-          try {
-            entry = await registerVideoDownload({
-              id: videoId || path.parse(filename).name,
-              title: videoTitle,
-              filename
-            });
-          } catch (err) {
-            console.error('[ytdlp:downloadVideo] registerVideoDownload failed', err);
-          }
-          send({ jobId, type: 'done', filename, entry });
-        } else {
-          send({ jobId, type: 'error', message: '下載完成但無法定位輸出檔案（可能為舊版 yt-dlp 異常輸出）' });
-        }
-      } else {
-        send({ jobId, type: 'error', message: `yt-dlp 退出碼 ${code}` });
-      }
-    });
-
-    return { jobId };
+  ipcMain.handle('ytdlp:downloadAudio', (e, { url, audioFormat = 'm4a' } = {}) => {
+    return startYtDlpJob(e, { url, mode: 'audio', audioFormat });
   });
 
   ipcMain.handle('ytdlp:cancel', async (_e, { jobId }) => {

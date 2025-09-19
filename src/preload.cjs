@@ -16,7 +16,9 @@ contextBridge.exposeInMainWorld('api', {
   readTextFile: (filePath) => ipcRenderer.invoke('file:readText', filePath),
   readBinaryBase64: (filePath) => ipcRenderer.invoke('file:readBinaryBase64', filePath),
   listCacheEntries: () => ipcRenderer.invoke('cache:list'),
+  importLocalToCache: (payload) => ipcRenderer.invoke('cache:importLocal', payload),
   ytdlpDownloadVideo: (payload) => ipcRenderer.invoke('ytdlp:downloadVideo', payload),
+  ytdlpDownloadAudio: (payload) => ipcRenderer.invoke('ytdlp:downloadAudio', payload),
   ytdlpCancel: (jobId) => ipcRenderer.invoke('ytdlp:cancel', { jobId }),
   onYtProgress: (cb) => ipcRenderer.on('ytdlp:progress', (_e, data) => cb?.(data)),
 
