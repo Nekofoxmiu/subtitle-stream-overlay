@@ -1,6 +1,7 @@
 import { app, ipcMain, dialog } from 'electron';
 import { spawn, execFile } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'node:fs/promises';
 import { checkAndOfferDownload, getBinPaths } from './binManager.mjs';
 import { getConfig, setConfig, store } from './config.mjs';
@@ -37,6 +38,58 @@ function buildCacheBasename({ title, id, fallbackPrefix = 'entry' } = {}) {
     base = `${fallbackPrefix}_${Date.now()}`;
   }
   return base.slice(0, 200);
+}
+
+function bufferFromIpcData(raw) {
+  if (!raw) return null;
+  if (Buffer.isBuffer(raw)) return raw;
+  if (raw instanceof ArrayBuffer) return Buffer.from(raw);
+  if (ArrayBuffer.isView(raw)) {
+    return Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+  }
+  if (typeof raw === 'string') {
+    return Buffer.from(raw, 'base64');
+  }
+  throw new Error('Unsupported file payload');
+}
+
+function normalizeIncomingFile(file) {
+  if (!file || typeof file !== 'object') return null;
+  const name = typeof file.name === 'string' ? file.name : '';
+  let data = null;
+  if ('data' in file) data = bufferFromIpcData(file.data);
+  if (!data && 'buffer' in file) data = bufferFromIpcData(file.buffer);
+  if (!data && 'content' in file) data = bufferFromIpcData(file.content);
+  if (!data && file instanceof ArrayBuffer) data = bufferFromIpcData(file);
+  if (!data) return null;
+  return { name, data };
+}
+
+async function persistIncomingFileToCache(file, { dir, title, id, fallbackPrefix, defaultExt } = {}) {
+  const normalized = normalizeIncomingFile(file);
+  if (!normalized) return null;
+  const { name, data } = normalized;
+  const parsed = path.parse(name || '');
+  const ext = parsed.ext || defaultExt || '';
+  const baseName = sanitizeFilenameSegment(parsed.name || parsed.base);
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'overlay-upload-'));
+  const tmpName = baseName ? `${baseName}${ext || ''}` : `upload${ext || ''}`;
+  const tmpPath = path.join(tmpRoot, tmpName || `upload_${Date.now()}`);
+  await fs.writeFile(tmpPath, data);
+  try {
+    const { filename, filePath } = await ingestFileIntoCache(tmpPath, {
+      dir,
+      title,
+      id,
+      fallbackPrefix,
+      defaultExt: ext || defaultExt,
+      move: true,
+      preserveBasename: true
+    });
+    return { filename, filePath, baseName };
+  } finally {
+    await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => { });
+  }
 }
 
 async function ensureUniqueFilename(dir, base, ext, currentPath = null) {
@@ -291,21 +344,39 @@ async function registerVideoDownload({ id, title, filename, sourcePath, keepSour
   return upsertDownloadEntry(patch);
 }
 
-async function registerSubtitleDownload({ id, title, sourcePath, keepSource = false }) {
-  if (!sourcePath) return null;
+async function registerSubtitleDownload({ id, title, sourcePath, filename, keepSource = false }) {
   const subsDir = getSubsCacheDir();
-  const resolvedSource = path.resolve(sourcePath);
-  const move = !keepSource && path.dirname(resolvedSource) === subsDir;
-  const { filename: storedName } = await ingestFileIntoCache(resolvedSource, {
-    dir: subsDir,
-    title,
-    id,
-    fallbackPrefix: 'subtitle',
-    defaultExt: '.ass',
-    move,
-    preserveBasename: keepSource
-  });
-  const patch = { subsFilename: storedName };
+  await ensureDir(subsDir);
+  let finalFilename = filename;
+  if (sourcePath) {
+    const resolvedSource = path.resolve(sourcePath);
+    const move = !keepSource && path.dirname(resolvedSource) === subsDir;
+    const result = await ingestFileIntoCache(resolvedSource, {
+      dir: subsDir,
+      title,
+      id,
+      fallbackPrefix: 'subtitle',
+      defaultExt: '.ass',
+      move,
+      preserveBasename: keepSource
+    });
+    finalFilename = result.filename;
+  } else if (filename) {
+    const existingPath = path.join(subsDir, filename);
+    const result = await ingestFileIntoCache(existingPath, {
+      dir: subsDir,
+      title,
+      id,
+      fallbackPrefix: 'subtitle',
+      defaultExt: '.ass',
+      move: true
+    });
+    finalFilename = result.filename;
+  } else {
+    return null;
+  }
+
+  const patch = { subsFilename: finalFilename };
   if (id) patch.id = id;
   if (title) patch.title = title;
   return upsertDownloadEntry(patch);
@@ -502,35 +573,83 @@ export function setupIpc(mainWindow) {
       videoTitle,
       subsPath,
       subsTitle,
-      title
+      title,
+      videoFile,
+      subsFile
     } = payload || {};
 
-    const videoPathStr = typeof videoPath === 'string' ? videoPath : '';
-    const subsPathStr = typeof subsPath === 'string' ? subsPath : '';
-    if (!videoPathStr && !subsPathStr) {
+    let videoPathStr = typeof videoPath === 'string' ? videoPath : '';
+    let subsPathStr = typeof subsPath === 'string' ? subsPath : '';
+    const hasIncomingVideoFile = Boolean(videoFile && !videoPathStr);
+    const hasIncomingSubsFile = Boolean(subsFile && !subsPathStr);
+    if (!videoPathStr && !subsPathStr && !hasIncomingVideoFile && !hasIncomingSubsFile) {
       throw new Error('缺少匯入檔案');
     }
 
     const normalize = (val) => (typeof val === 'string' ? val.trim() : '');
     const baseTitle = normalize(title);
-    const videoBaseTitle = normalize(videoTitle) || (videoPathStr ? path.parse(videoPathStr).name : '');
-    const subsBaseTitle = normalize(subsTitle) || (subsPathStr ? path.parse(subsPathStr).name : '');
 
-  const existingRaw = id ? readDownloadStore().find((item) => item?.id === id) : null;
-  let entryId = id || existingRaw?.id || generateEntryId('local');
-  let effectiveTitle = normalize(existingRaw?.title) || baseTitle || videoBaseTitle || subsBaseTitle;
-  let entry = null;
-  const decoupleSubs = !id && Boolean(videoPathStr && subsPathStr);
+    const existingRaw = id ? readDownloadStore().find((item) => item?.id === id) : null;
+    let entryId = id || existingRaw?.id || generateEntryId('local');
+    let effectiveTitle = normalize(existingRaw?.title) || baseTitle || '';
+    let entry = null;
 
-  if (videoPathStr) {
-    const titleForVideo = effectiveTitle || videoBaseTitle || subsBaseTitle;
-    try {
-      entry = await registerVideoDownload({
-          id: entryId,
-          title: titleForVideo || undefined,
-          sourcePath: videoPathStr,
-          keepSource: true
-        });
+    let videoUpload = null;
+    if (hasIncomingVideoFile) {
+      videoUpload = await persistIncomingFileToCache(videoFile, {
+        dir: getVideoCacheDir(),
+        title: effectiveTitle || undefined,
+        id: entryId,
+        fallbackPrefix: 'video'
+      });
+      if (videoUpload) {
+        videoPathStr = path.join(getVideoCacheDir(), videoUpload.filename);
+      }
+    }
+
+    let subsUpload = null;
+    if (hasIncomingSubsFile) {
+      subsUpload = await persistIncomingFileToCache(subsFile, {
+        dir: getSubsCacheDir(),
+        title: effectiveTitle || undefined,
+        id: entryId,
+        fallbackPrefix: 'subtitle',
+        defaultExt: '.ass'
+      });
+      if (subsUpload) {
+        subsPathStr = path.join(getSubsCacheDir(), subsUpload.filename);
+      }
+    }
+
+    const videoBaseTitle = normalize(videoTitle)
+      || videoUpload?.baseName
+      || (videoPathStr ? path.parse(videoPathStr).name : '');
+    const subsBaseTitle = normalize(subsTitle)
+      || subsUpload?.baseName
+      || (subsPathStr ? path.parse(subsPathStr).name : '');
+    if (!effectiveTitle) effectiveTitle = videoBaseTitle || subsBaseTitle;
+
+    const hasVideoImport = Boolean(videoPathStr);
+    const hasSubsImport = Boolean(subsPathStr);
+    const decoupleSubs = !id && hasVideoImport && hasSubsImport;
+
+    if (hasVideoImport) {
+      const titleForVideo = effectiveTitle || videoBaseTitle || subsBaseTitle;
+      try {
+        if (videoUpload) {
+          entry = await registerVideoDownload({
+            id: entryId,
+            title: titleForVideo || undefined,
+            filename: videoUpload.filename
+          });
+        } else {
+          entry = await registerVideoDownload({
+            id: entryId,
+            title: titleForVideo || undefined,
+            sourcePath: videoPathStr,
+            keepSource: true
+          });
+        }
         if (entry?.id) entryId = entry.id;
         if (entry?.title) effectiveTitle = entry.title;
       } catch (err) {
@@ -538,22 +657,30 @@ export function setupIpc(mainWindow) {
       }
     }
 
-  if (subsPathStr) {
-    const titleForSubs = effectiveTitle || subsBaseTitle || videoBaseTitle;
-    const subsEntryId = decoupleSubs ? generateEntryId('local_sub') : entryId;
-    try {
-      entry = await registerSubtitleDownload({
-        id: subsEntryId,
-        title: titleForSubs || undefined,
-        sourcePath: subsPathStr,
-        keepSource: true
-      });
-      if (!decoupleSubs && entry?.id) entryId = entry.id;
-      if (entry?.title) effectiveTitle = entry.title;
-    } catch (err) {
-      throw new Error(`匯入字幕失敗：${err?.message || err}`);
+    if (hasSubsImport) {
+      const titleForSubs = effectiveTitle || subsBaseTitle || videoBaseTitle;
+      const subsEntryId = decoupleSubs ? generateEntryId('local_sub') : entryId;
+      try {
+        if (subsUpload) {
+          entry = await registerSubtitleDownload({
+            id: subsEntryId,
+            title: titleForSubs || undefined,
+            filename: subsUpload.filename
+          });
+        } else {
+          entry = await registerSubtitleDownload({
+            id: subsEntryId,
+            title: titleForSubs || undefined,
+            sourcePath: subsPathStr,
+            keepSource: true
+          });
+        }
+        if (!decoupleSubs && entry?.id) entryId = entry.id;
+        if (entry?.title) effectiveTitle = entry.title;
+      } catch (err) {
+        throw new Error(`匯入字幕失敗：${err?.message || err}`);
+      }
     }
-  }
 
     if (!entry && existingRaw) {
       entry = await buildDownloadEntry(existingRaw);
