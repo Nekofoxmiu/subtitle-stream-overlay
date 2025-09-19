@@ -349,7 +349,7 @@ function appendLog(line) {
 function showDownloadProgress(show) {
   if (!dom.dlProg) return;
   if (show) {
-    dom.dlProg.style.display = '';
+    dom.dlProg.style.display = 'block';
     dom.dlProg.max = 100;
     dom.dlProg.removeAttribute('value');
     state.downloadProgressStarted = false;
@@ -1160,7 +1160,6 @@ function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   searchInput.type = 'search';
   searchInput.placeholder = searchPlaceholder || '';
   searchInput.style.width = '100%';
-  searchInput.style.marginRight = '8px';
   container.appendChild(searchInput);
   const select = document.createElement('select');
   select.style.minWidth = '260px';
@@ -1168,7 +1167,6 @@ function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   container.appendChild(select);
   if (hint) {
     const hintEl = document.createElement('small');
-    hintEl.style.marginLeft = '8px';
     hintEl.textContent = hint;
     container.appendChild(hintEl);
   }
