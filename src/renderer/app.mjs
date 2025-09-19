@@ -1,11 +1,13 @@
 const $ = (selector) => document.querySelector(selector);
 
 const dom = {
+  appShell: document.querySelector('.app-shell'),
   binInfo: $('#binInfo'),
   mainArea: document.querySelector('.main-area'),
   controlCard: $('#controlCard'),
   controlToggle: $('#controlCardToggle'),
   controlRestore: $('#controlCardRestore'),
+  previewExpand: $('#previewExpand'),
   portInput: $('#port'),
   portView: $('#portView'),
   applyMsg: $('#applyMsg'),
@@ -67,8 +69,23 @@ const state = {
   subsSearch: '',
   objectUrl: '',
   binProgress: new Map(),
-  controlCollapsed: false
+  controlCollapsed: false,
+  previewMaximized: false,
+  downloadProgressStarted: false,
+  downloadStatusMessage: '',
+  playerVolume: 1
 };
+
+const persistVolumeSetting = debounce((volume) => {
+  if (!window?.api?.setConfig) return;
+  try {
+    Promise.resolve(window.api.setConfig({ player: { volume } })).catch((err) => {
+      console.error('[config] 無法儲存音量', err);
+    });
+  } catch (err) {
+    console.error('[config] 無法儲存音量', err);
+  }
+}, 240);
 
 /* ---------------- Overlay 時間同步 ---------------- */
 class OverlaySync {
@@ -108,6 +125,7 @@ const overlaySync = new OverlaySync(dom.video);
 (async function init() {
   setupEventHandlers();
   applyControlVisibility();
+  applyPreviewMaximized();
   await loadInitialConfig();
   await loadBinInfo();
   await refreshCachedEntries();
@@ -124,6 +142,10 @@ async function loadInitialConfig() {
     if (output.align) dom.align.value = output.align;
     if (output.background) dom.background.value = output.background;
   }
+  const storedVolume = cfg?.player?.volume;
+  const initialVolume = clampVolume(storedVolume != null ? storedVolume : dom.video?.volume ?? 1);
+  state.playerVolume = initialVolume;
+  if (dom.video) dom.video.volume = initialVolume;
   dom.portView.textContent = dom.portInput.value || '';
   dom.cookiesView.textContent = cfg?.cookiesPath ? cfg.cookiesPath : '(未設定)';
   overlaySync.connect(getCurrentPort());
@@ -187,7 +209,14 @@ function setupEventHandlers() {
   dom.closeAdvanced?.addEventListener('click', () => setSidebarOpen(false));
   dom.sidebarOverlay?.addEventListener('click', () => setSidebarOpen(false));
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') setSidebarOpen(false);
+    if (event.key === 'Escape') {
+      if (state.previewMaximized) {
+        setPreviewMaximized(false);
+        dom.previewExpand?.focus();
+        return;
+      }
+      setSidebarOpen(false);
+    }
   });
 
   dom.controlToggle?.addEventListener('click', () => {
@@ -200,6 +229,17 @@ function setupEventHandlers() {
   dom.controlRestore?.addEventListener('click', () => {
     setControlCollapsed(false);
     dom.controlToggle?.focus();
+  });
+
+  dom.previewExpand?.addEventListener('click', () => {
+    setPreviewMaximized(!state.previewMaximized);
+    dom.previewExpand?.focus();
+  });
+
+  dom.video?.addEventListener('volumechange', () => {
+    const volume = clampVolume(dom.video.volume);
+    state.playerVolume = volume;
+    persistVolumeSetting(volume);
   });
 
   ['background', 'align', 'maxWidth', 'port'].forEach((id) => {
@@ -249,6 +289,9 @@ function applyControlVisibility() {
     dom.controlRestore.setAttribute('aria-controls', 'controlCard');
     dom.controlRestore.classList.toggle('visible', collapsed);
     dom.controlRestore.setAttribute('aria-hidden', collapsed ? 'false' : 'true');
+    dom.controlRestore.title = restoreLabel;
+    dom.controlRestore.disabled = !collapsed;
+    dom.controlRestore.setAttribute('tabindex', collapsed ? '0' : '-1');
   }
   if (toggle) {
     const label = collapsed ? restoreLabel : minimizeLabel;
@@ -256,6 +299,27 @@ function applyControlVisibility() {
     toggle.setAttribute('aria-label', label);
     toggle.setAttribute('aria-controls', 'controlCard');
     toggle.setAttribute('aria-expanded', String(!collapsed));
+  }
+}
+
+function setPreviewMaximized(maximized) {
+  state.previewMaximized = Boolean(maximized);
+  applyPreviewMaximized();
+}
+
+function applyPreviewMaximized() {
+  const maximized = Boolean(state.previewMaximized);
+  dom.appShell?.classList.toggle('preview-maximized', maximized);
+  document.body.classList.toggle('preview-maximized', maximized);
+  const btn = dom.previewExpand;
+  if (btn) {
+    const expandLabel = btn.dataset?.labelExpand || '最大化預覽';
+    const collapseLabel = btn.dataset?.labelCollapse || '恢復預覽大小';
+    const label = maximized ? collapseLabel : expandLabel;
+    btn.textContent = label;
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('aria-pressed', String(maximized));
+    btn.setAttribute('title', label);
   }
 }
 
@@ -284,10 +348,29 @@ function appendLog(line) {
 
 function showDownloadProgress(show) {
   if (!dom.dlProg) return;
-  dom.dlProg.style.display = show ? '' : 'none';
-  if (!show) {
+  if (show) {
+    dom.dlProg.style.display = '';
+    dom.dlProg.max = 100;
+    dom.dlProg.removeAttribute('value');
+    state.downloadProgressStarted = false;
+  } else {
+    dom.dlProg.style.display = 'none';
     dom.dlProg.value = 0;
-    if (dom.dlTxt) dom.dlTxt.textContent = '';
+    dom.dlProg.removeAttribute('value');
+    state.downloadProgressStarted = false;
+  }
+}
+
+function updateDownloadStatus(message = '') {
+  const text = typeof message === 'string' ? message : '';
+  state.downloadStatusMessage = text;
+  if (dom.dlTxt) {
+    dom.dlTxt.textContent = text;
+    if (text) {
+      dom.dlTxt.setAttribute('title', text);
+    } else {
+      dom.dlTxt.removeAttribute('title');
+    }
   }
 }
 
@@ -305,6 +388,7 @@ async function startYtDownload({ type = 'video' } = {}) {
     return;
   }
   showDownloadProgress(true);
+  updateDownloadStatus('正在準備下載...');
   try {
     const fn = type === 'audio' ? window.api.ytdlpDownloadAudio : window.api.ytdlpDownloadVideo;
     const { jobId } = await fn({ url });
@@ -313,7 +397,10 @@ async function startYtDownload({ type = 'video' } = {}) {
   } catch (err) {
     state.activeDownloadMode = null;
     showDownloadProgress(false);
-    alert(err?.message || String(err));
+    const message = err?.message || String(err);
+    updateDownloadStatus(`下載啟動失敗：${message}`);
+    state.downloadProgressStarted = true;
+    alert(message);
   }
 }
 
@@ -336,6 +423,8 @@ async function handleCancelDownload() {
     state.jobId = null;
     state.activeDownloadMode = null;
     showDownloadProgress(false);
+    updateDownloadStatus('下載已取消');
+    state.downloadProgressStarted = true;
   }
 }
 
@@ -343,6 +432,10 @@ function handleYtProgress(ev) {
   if (!ev) return;
   if (ev.type === 'log') {
     appendLog(`[${ev.stream}] ${ev.line}`);
+    if (!state.downloadProgressStarted) {
+      const singleLine = typeof ev.line === 'string' ? ev.line.replace(/\s+/g, ' ').trim() : '';
+      if (singleLine) updateDownloadStatus(singleLine);
+    }
     return;
   }
 
@@ -352,15 +445,29 @@ function handleYtProgress(ev) {
   }
 
   if (ev.type === 'progress') {
-    if (dom.dlProg) dom.dlProg.value = ev.percent || 0;
-    if (dom.dlTxt) {
-      const base = `${(ev.percent || 0).toFixed(1)}% ${ev.speed || ''} ${ev.eta || ''}`.trim();
-      if (state.activeDownloadMode) {
-        const label = state.activeDownloadMode === 'audio' ? '音訊' : '影片';
-        dom.dlTxt.textContent = `[${label}] ${base}`;
+    state.downloadProgressStarted = true;
+    if (dom.dlProg) {
+      const percent = typeof ev.percent === 'number' ? Math.max(0, Math.min(100, ev.percent)) : null;
+      if (percent == null) {
+        dom.dlProg.removeAttribute('value');
       } else {
-        dom.dlTxt.textContent = base;
+        dom.dlProg.max = 100;
+        dom.dlProg.value = percent;
+        dom.dlProg.setAttribute('value', String(percent));
       }
+    }
+    const percentText = typeof ev.percent === 'number' ? `${ev.percent.toFixed(1)}%` : '';
+    const parts = [];
+    if (percentText) parts.push(percentText);
+    if (ev.speed) parts.push(ev.speed);
+    if (ev.eta) parts.push(ev.eta);
+    const base = parts.join(' ');
+    if (state.activeDownloadMode) {
+      const label = state.activeDownloadMode === 'audio' ? '音訊' : '影片';
+      const labelText = base ? `[${label}] ${base}` : `[${label}] 下載中...`;
+      updateDownloadStatus(labelText);
+    } else {
+      updateDownloadStatus(base || '下載中...');
     }
   } else if (ev.type === 'done') {
     handleDownloadDone(ev).catch((err) => {
@@ -370,7 +477,10 @@ function handleYtProgress(ev) {
     showDownloadProgress(false);
     state.jobId = null;
     state.activeDownloadMode = null;
-    alert('下載失敗：' + (ev.message || '未知錯誤'));
+    const message = ev.message || '未知錯誤';
+    updateDownloadStatus(`下載失敗：${message}`);
+    state.downloadProgressStarted = true;
+    alert('下載失敗：' + message);
   }
 }
 
@@ -481,6 +591,9 @@ async function handleDownloadDone(payload) {
   state.activeDownloadMode = null;
   const mode = typeof payload === 'object' ? payload?.mode : null;
   const label = mode === 'audio' ? '音訊' : '影片';
+  const doneLabel = label ? `${label}下載完成` : '下載完成';
+  updateDownloadStatus(doneLabel);
+  state.downloadProgressStarted = true;
   const filename = typeof payload === 'string' ? payload : payload?.filename;
   const entry = typeof payload === 'object' ? payload?.entry : null;
   if (filename) {
@@ -997,6 +1110,14 @@ function releaseObjectUrl() {
 function syncOverlayConnection() {
   overlaySync.connect(getCurrentPort());
   overlaySync.start();
+}
+
+function clampVolume(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 1;
+  if (num < 0) return 0;
+  if (num > 1) return 1;
+  return num;
 }
 
 /* ---------------- 樣式設定 ---------------- */

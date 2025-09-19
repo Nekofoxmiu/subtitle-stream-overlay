@@ -12,6 +12,9 @@ export const store = new Store({
       align: 'center',
       wrapStyle: 2
     },
+    player: {
+      volume: 1
+    },
     // 新增：cookies 路徑（Netscape cookies.txt）
     cookiesPath: '',
     downloads: []

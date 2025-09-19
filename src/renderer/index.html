@@ -277,16 +277,6 @@
       grid-template-columns: 1fr;
     }
 
-    .collapse-placeholder {
-      display: none;
-      justify-self: start;
-      margin: 0 32px;
-    }
-
-    .collapse-placeholder.visible {
-      display: inline-flex;
-    }
-
     .card {
       background: var(--surface-soft);
       border-radius: var(--radius-md);
@@ -331,6 +321,14 @@
       align-items: center;
       gap: 8px;
       flex-shrink: 0;
+    }
+
+    #controlCardRestore {
+      display: none;
+    }
+
+    #controlCardRestore.visible {
+      display: inline-flex;
     }
 
     .card-header h2 {
@@ -450,11 +448,21 @@
       gap: 12px;
       color: var(--text-secondary);
       font-size: 13px;
+      flex-wrap: nowrap;
     }
 
     #dlProg {
       width: 220px;
       display: none;
+    }
+
+    #dlTxt {
+      flex: 1;
+      min-width: 0;
+      display: block;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .hint {
@@ -475,6 +483,60 @@
       border-radius: 16px;
       background: #0f172a;
       box-shadow: 0 18px 34px -24px rgba(15, 23, 42, 0.8);
+    }
+
+    body.preview-maximized {
+      overflow: hidden;
+    }
+
+    .app-shell.preview-maximized {
+      gap: 0;
+      height: 100vh;
+    }
+
+    .app-shell.preview-maximized .topbar {
+      display: none;
+    }
+
+    .app-shell.preview-maximized .main-area {
+      padding: 0;
+      display: flex;
+    }
+
+    .app-shell.preview-maximized .main-area > *:not(#previewCard) {
+      display: none !important;
+    }
+
+    .app-shell.preview-maximized #previewCard {
+      flex: 1;
+      height: 100vh;
+      border-radius: 0;
+      box-shadow: none;
+      background: var(--surface);
+      padding: 24px 32px 32px;
+    }
+
+    .app-shell.preview-maximized #previewCard .card-body {
+      flex: 1;
+    }
+
+    .app-shell.preview-maximized #previewCard .preview-area {
+      flex: 1;
+      justify-content: center;
+    }
+
+    .app-shell.preview-maximized #previewCard .preview-area #localVideo {
+      flex: 1;
+      height: 100%;
+      min-height: 0;
+      max-height: none;
+      object-fit: contain;
+      border-radius: 0;
+      box-shadow: none;
+    }
+
+    .app-shell.preview-maximized #previewCard .apply-row {
+      justify-content: flex-end;
     }
 
     .info-line {
@@ -709,10 +771,6 @@
       .main-area.controls-collapsed {
         grid-template-columns: 1fr;
       }
-
-      .collapse-placeholder {
-        margin: 0;
-      }
     }
 
     @media (max-width: 768px) {
@@ -793,7 +851,6 @@
     </header>
 
     <main class="main-area">
-      <button id="controlCardRestore" class="btn ghost small collapse-placeholder" type="button" aria-hidden="true">顯示控制區</button>
       <section id="controlCard" class="card quick-card">
         <header class="card-header">
           <div class="card-header-text">
@@ -843,6 +900,11 @@
           <div class="card-header-text">
             <h2>預覽與輸出</h2>
             <p>確認字幕同步後，將設定套用到 overlay。</p>
+          </div>
+          <div class="card-header-actions">
+            <button id="controlCardRestore" class="btn ghost small" type="button" aria-hidden="true">顯示控制區</button>
+            <button id="previewExpand" class="btn ghost small" type="button" data-label-expand="最大化預覽"
+              data-label-collapse="恢復預覽大小">最大化預覽</button>
           </div>
         </header>
         <div class="card-body">
