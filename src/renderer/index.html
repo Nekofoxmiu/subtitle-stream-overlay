@@ -59,7 +59,7 @@
       overflow: hidden;
       display: flex;
       flex-direction: column;
-      gap: 24px;
+      gap: 18px;
     }
 
     .topbar {
@@ -67,7 +67,7 @@
       display: flex;
       flex-wrap: wrap;
       justify-content: space-between;
-      gap: 24px;
+      gap: 18px;
     }
 
     .brand {
@@ -138,7 +138,7 @@
       align-items: center;
       gap: 6px;
       padding: 6px 10px;
-      border-radius: 999px;
+      border-radius: 16px;
       background: rgba(148, 163, 184, 0.16);
       transition: background 0.2s ease, color 0.2s ease;
     }
@@ -219,7 +219,7 @@
 
     .btn {
       border: none;
-      border-radius: 999px;
+      border-radius: 12px;
       padding: 10px 20px;
       font-weight: 600;
       font-size: 14px;
@@ -270,7 +270,7 @@
       padding: 0 32px 32px;
       display: grid;
       grid-template-columns: 1fr;
-      gap: 24px;
+      gap: 18px;
     }
 
     .main-area.controls-collapsed {
@@ -305,7 +305,7 @@
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
-      gap: 16px;
+      gap: 10px;
       flex-wrap: wrap;
     }
 
@@ -313,14 +313,21 @@
       display: flex;
       flex-direction: column;
       gap: 6px;
+      min-width: 0;
+      overflow-wrap: anywhere;
       flex: 1 1 auto;
     }
 
     .card-header-actions {
       display: flex;
       align-items: center;
-      gap: 8px;
       flex-shrink: 0;
+      margin-left: auto;
+      flex: 0 0 auto;
+    }
+
+    .app-shell.preview-maximized #previewCard .card-header {
+      justify-content: flex-end;
     }
 
     #controlCardRestore {
@@ -362,7 +369,7 @@
     }
 
     .field-body {
-      flex: 1 1 240px;
+      width: 100%;
       display: flex;
       flex-direction: column;
       gap: 10px;
@@ -384,7 +391,7 @@
     select {
       width: 100%;
       font: inherit;
-      border-radius: 999px;
+      border-radius: 12px;
       border: 1px solid rgba(148, 163, 184, 0.55);
       padding: 10px 46px 10px 18px;
       background-color: rgba(255, 255, 255, 0.85);
@@ -438,29 +445,37 @@
       gap: 10px;
     }
 
+
     .progress-row {
-      margin-left: 120px;
+      width: 100%;
     }
 
     .progress-line {
+      width: min(400px, 100%);
       display: flex;
-      align-items: center;
-      gap: 12px;
+      gap: 8px;
+      flex-direction: column;
+      align-items: flex-start;
       color: var(--text-secondary);
       font-size: 13px;
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
     }
 
     #dlProg {
-      width: 220px;
+      /* 撐滿可用寬度，但不超過容器 */
+      width: min(400px, 100%);
       display: none;
+      margin-left: 8px;
     }
 
     #dlTxt {
-      flex: 1;
-      min-width: 0;
+      flex-basis: 100%;
+      margin-top: 4px;
+      margin-left: 8px;
+      width: min(400px, 100%);
       display: block;
       white-space: nowrap;
+      text-align: left;
       overflow: hidden;
       text-overflow: ellipsis;
     }
@@ -503,7 +518,7 @@
       display: flex;
     }
 
-    .app-shell.preview-maximized .main-area > *:not(#previewCard) {
+    .app-shell.preview-maximized .main-area>*:not(#previewCard) {
       display: none !important;
     }
 
@@ -769,55 +784,11 @@
 
     @media (min-width: 980px) {
       .main-area {
-        grid-template-columns: 1.4fr 1fr;
+        grid-template-columns: 1fr 1.2fr;
       }
 
-      .main-area.controls-collapsed {
-        grid-template-columns: 1fr;
-      }
     }
 
-    @media (max-width: 768px) {
-      body {
-        padding: 0;
-      }
-
-      .app-shell {
-        border-radius: 0;
-      }
-
-      .brand {
-        width: 100%;
-        justify-content: center;
-      }
-
-      .topbar {
-        justify-content: center;
-      }
-
-      .progress-row,
-      .hint {
-        margin-left: 0;
-      }
-
-      .row {
-        flex-direction: column;
-        align-items: stretch;
-      }
-
-      .row label {
-        min-width: 0;
-      }
-
-      .apply-row {
-        flex-direction: column;
-        align-items: stretch;
-      }
-
-      #localVideo {
-        min-height: 220px;
-      }
-    }
   </style>
 </head>
 
@@ -859,11 +830,15 @@
         <header class="card-header">
           <div class="card-header-text">
             <h2>控制區</h2>
-            <p>載入字幕，並提供影片或音訊進行同步監聽或監看。<br>快速於OBS、streamlabs等軟體動態呈現！</p>
           </div>
           <div class="card-header-actions">
-            <button id="controlCardToggle" class="btn ghost small" type="button"
-              data-label-minimize="最小化控制區" data-label-restore="顯示控制區">最小化控制區</button>
+            <button id="controlCardToggle" class="btn ghost small" type="button" data-label-minimize="最小化控制區"
+              data-label-restore="顯示控制區">最小化控制區</button>
+          </div>
+        </header>
+        <header class="card-header">
+          <div class="card-header-text">
+            <p>載入字幕，並提供影片或音訊進行同步監聽或監看。<br>快速於OBS、streamlabs等軟體動態呈現！</p>
           </div>
         </header>
         <div class="stack card-body">
@@ -879,7 +854,6 @@
             </div>
           </div>
           <div class="row progress-row">
-            <label></label>
             <div class="progress-line">
               <progress id="dlProg" max="100" value="0" style="display:none"></progress>
               <span id="dlTxt" class="mono"></span>
@@ -902,13 +876,17 @@
       <section id="previewCard" class="card preview-card">
         <header class="card-header">
           <div class="card-header-text">
-            <h2>預覽與輸出</h2>
-            <p>確認字幕同步後，將設定套用到 overlay。</p>
+            <h2>監視區</h2>
           </div>
           <div class="card-header-actions">
             <button id="controlCardRestore" class="btn ghost small" type="button" aria-hidden="true">顯示控制區</button>
             <button id="previewExpand" class="btn ghost small" type="button" data-label-expand="最大化預覽"
               data-label-collapse="恢復預覽大小">最大化預覽</button>
+          </div>
+        </header>
+        <header class="card-header">
+          <div class="card-header-text">
+            <p>監視畫面或監聽音訊，同步字幕傳遞至 overlay。</p>
           </div>
         </header>
         <div class="card-body">
@@ -917,7 +895,7 @@
             <div id="activeCacheInfo" class="info-line mono"></div>
           </div>
           <div class="apply-row">
-            <button id="applyToOverlay" class="btn primary">套用到 Overlay</button>
+            <button id="applyToOverlay" class="btn primary">強制刷新 Overlay</button>
             <span id="applyMsg"></span>
           </div>
         </div>
