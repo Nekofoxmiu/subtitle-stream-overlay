@@ -4,6 +4,7 @@ const dom = {
   binInfo: $('#binInfo'),
   portInput: $('#port'),
   portView: $('#portView'),
+  quickPort: $('#quickPort'),
   applyMsg: $('#applyMsg'),
   cookiesView: $('#cookiesView'),
   log: $('#ytLog'),
@@ -17,6 +18,8 @@ const dom = {
   pickCookies: $('#pickCookies'),
   clearCookies: $('#clearCookies'),
   checkBins: $('#checkBins'),
+  settingsToggle: $('#settingsToggle'),
+  binProgress: $('#binProgress'),
   pickSubs: $('#pickSubs'),
   pickFonts: $('#pickFonts'),
   ytDownload: $('#ytDownload'),
@@ -28,6 +31,11 @@ const dom = {
   maxWidth: $('#maxWidth'),
   applyToOverlay: $('#applyToOverlay'),
   activeCacheInfo: $('#activeCacheInfo')
+};
+
+const BIN_DISPLAY_NAME = {
+  'yt-dlp': 'yt-dlp',
+  ffmpeg: 'FFmpeg'
 };
 
 const videoCacheControls = createCacheSelector(dom.videoFile?.closest('.row'), {
@@ -56,7 +64,12 @@ const state = {
   activeSubsId: '',
   videoSearch: '',
   subsSearch: '',
-  objectUrl: ''
+  objectUrl: '',
+  binProgress: new Map(),
+  binPaths: {
+    ytDlpPath: '',
+    ffmpegPath: ''
+  }
 };
 
 /* ---------------- Overlay 時間同步 ---------------- */
@@ -96,9 +109,24 @@ const overlaySync = new OverlaySync(dom.video);
 /* ---------------- 初始化 ---------------- */
 (async function init() {
   setupEventHandlers();
-  await loadInitialConfig();
-  await refreshCachedEntries();
   window.api.onYtProgress(handleYtProgress);
+  window.api.onBinProgress(handleBinProgress);
+  if (window.matchMedia && window.matchMedia('(max-width: 1180px)').matches) {
+    document.body.classList.add('sidebar-collapsed');
+    dom.settingsToggle?.setAttribute('aria-expanded', 'false');
+  }
+  if (dom.settingsToggle) {
+    const collapsed = document.body.classList.contains('sidebar-collapsed');
+    dom.settingsToggle.textContent = collapsed ? '顯示設定' : '隱藏設定';
+  }
+  await loadInitialConfig();
+  try {
+    const bins = await window.api.getBins();
+    setBinInfo(bins);
+  } catch (err) {
+    console.warn('[bins] 無法讀取已安裝資訊', err);
+  }
+  await refreshCachedEntries();
 })();
 
 async function loadInitialConfig() {
@@ -111,6 +139,7 @@ async function loadInitialConfig() {
     if (output.background) dom.background.value = output.background;
   }
   dom.portView.textContent = dom.portInput.value || '';
+  if (dom.quickPort) dom.quickPort.textContent = dom.portInput.value || '';
   dom.cookiesView.textContent = cfg?.cookiesPath ? cfg.cookiesPath : '(未設定)';
   overlaySync.connect(getCurrentPort());
 }
@@ -143,7 +172,15 @@ function setupEventHandlers() {
     syncOverlayConnection();
   }, 120);
 
-  
+
+  dom.settingsToggle?.addEventListener('click', () => {
+    const collapsed = document.body.classList.toggle('sidebar-collapsed');
+    dom.settingsToggle?.setAttribute('aria-expanded', String(!collapsed));
+    if (dom.settingsToggle) {
+      dom.settingsToggle.textContent = collapsed ? '顯示設定' : '隱藏設定';
+    }
+  });
+
   dom.pickCookies?.addEventListener('click', handlePickCookies);
   dom.clearCookies?.addEventListener('click', handleClearCookies);
   dom.checkBins?.addEventListener('click', handleCheckBins);
@@ -170,6 +207,7 @@ function setupEventHandlers() {
 
   dom.portInput?.addEventListener('input', () => {
     dom.portView.textContent = dom.portInput.value || '';
+    if (dom.quickPort) dom.quickPort.textContent = dom.portInput.value || '';
   });
 
   dom.applyToOverlay?.addEventListener('click', async () => {
@@ -635,17 +673,198 @@ async function handlePickFonts() {
 
 /* ---------------- Binaries ---------------- */
 async function handleCheckBins() {
+  const btn = dom.checkBins;
+  const originalLabel = btn?.textContent;
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    btn.textContent = '檢查中…';
+  }
   try {
     const bins = await window.api.ensureBins();
     setBinInfo(bins);
   } catch (err) {
     alert(err?.message || String(err));
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.dataset.loading = 'false';
+      btn.textContent = originalLabel || '檢查/下載 yt-dlp / ffmpeg';
+    }
   }
 }
 
 function setBinInfo(bins) {
   if (!bins) return;
-  dom.binInfo.textContent = `yt-dlp: ${bins.ytDlpPath || '未設定'} | ffmpeg: ${bins.ffmpegPath || '未設定'}`;
+  state.binPaths = {
+    ytDlpPath: bins.ytDlpPath || '',
+    ffmpegPath: bins.ffmpegPath || ''
+  };
+  updateBinInfoView();
+  handleBinProgress({
+    label: 'yt-dlp',
+    state: 'ready',
+    message: state.binPaths.ytDlpPath ? '已就緒' : '尚未安裝',
+    path: state.binPaths.ytDlpPath
+  });
+  handleBinProgress({
+    label: 'ffmpeg',
+    state: 'ready',
+    message: state.binPaths.ffmpegPath ? '已就緒' : '尚未安裝',
+    path: state.binPaths.ffmpegPath
+  });
+}
+
+function updateBinInfoView() {
+  if (!dom.binInfo) return;
+  const { ytDlpPath, ffmpegPath } = state.binPaths || {};
+  const yt = ytDlpPath ? ytDlpPath : '未設定';
+  const ff = ffmpegPath ? ffmpegPath : '未設定';
+  dom.binInfo.textContent = `yt-dlp：${yt} ｜ ffmpeg：${ff}`;
+}
+
+function handleBinProgress(payload = {}) {
+  if (!payload || !payload.label) return;
+  const { label, state: status, total, downloaded, message, path } = payload;
+  const item = ensureBinProgressItem(label);
+  if (!item) return;
+  const { el, progressEl, statusEl, pathEl, percentEl } = item;
+
+  if (typeof path === 'string') {
+    if (label === 'yt-dlp') state.binPaths.ytDlpPath = path;
+    if (label === 'ffmpeg') state.binPaths.ffmpegPath = path;
+    updateBinInfoView();
+    if (pathEl) {
+      pathEl.textContent = path || '未設定';
+      pathEl.title = path || '';
+    }
+  }
+
+  if (status) el.dataset.state = status;
+
+  const text = message || '';
+  switch (status) {
+    case 'start':
+      el.classList.remove('is-error', 'is-ready', 'is-empty');
+      setProgressValue(progressEl, 0, total);
+      if (statusEl) statusEl.textContent = text || '連線中…';
+      if (percentEl) percentEl.textContent = '';
+      break;
+    case 'progress': {
+      el.classList.remove('is-error', 'is-ready', 'is-empty');
+      setProgressValue(progressEl, downloaded, total);
+      const percent = total && total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : null;
+      if (percentEl) percentEl.textContent = percent != null ? `${percent}%` : '';
+      if (statusEl) {
+        statusEl.textContent = text || (percent != null
+          ? `下載中（${formatBytes(downloaded)} / ${formatBytes(total)}）`
+          : `已下載 ${formatBytes(downloaded)}`);
+      }
+      break;
+    }
+    case 'downloaded':
+      el.classList.remove('is-error');
+      setProgressValue(progressEl, total || downloaded, total || progressEl?.max || downloaded);
+      if (percentEl) percentEl.textContent = '100%';
+      if (statusEl) statusEl.textContent = text || '下載完成，準備安裝…';
+      break;
+    case 'processing':
+      el.classList.remove('is-error', 'is-ready');
+      if (progressEl) {
+        progressEl.removeAttribute('max');
+        progressEl.removeAttribute('value');
+      }
+      if (percentEl) percentEl.textContent = '';
+      if (statusEl) statusEl.textContent = text || '處理中…';
+      break;
+    case 'done':
+      el.classList.remove('is-error');
+      el.classList.add('is-ready');
+      setProgressValue(progressEl, progressEl?.max || 1, progressEl?.max || 1);
+      if (percentEl) percentEl.textContent = '100%';
+      if (statusEl) statusEl.textContent = text || '完成';
+      break;
+    case 'ready':
+      el.classList.remove('is-error');
+      el.classList.toggle('is-ready', Boolean(path));
+      el.classList.toggle('is-empty', !path);
+      if (progressEl) {
+        progressEl.max = 1;
+        progressEl.value = path ? 1 : 0;
+      }
+      if (percentEl) percentEl.textContent = '';
+      if (statusEl) statusEl.textContent = text || (path ? '已就緒' : '未設定');
+      break;
+    case 'error':
+      el.classList.add('is-error');
+      if (statusEl) statusEl.textContent = text || '發生錯誤';
+      if (percentEl) percentEl.textContent = '';
+      break;
+    default:
+      if (text && statusEl) statusEl.textContent = text;
+      break;
+  }
+}
+
+function ensureBinProgressItem(label) {
+  if (!dom.binProgress) return null;
+  if (state.binProgress.has(label)) return state.binProgress.get(label);
+  const el = document.createElement('div');
+  el.className = 'bin-progress-item';
+
+  const header = document.createElement('div');
+  header.className = 'bin-progress-header';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'bin-progress-name';
+  nameEl.textContent = BIN_DISPLAY_NAME[label] || label;
+  const percentEl = document.createElement('span');
+  percentEl.className = 'bin-progress-percent';
+  header.append(nameEl, percentEl);
+
+  const progressEl = document.createElement('progress');
+  progressEl.value = 0;
+  progressEl.max = 1;
+
+  const statusEl = document.createElement('div');
+  statusEl.className = 'bin-progress-status';
+
+  const pathEl = document.createElement('div');
+  pathEl.className = 'bin-progress-path mono';
+  pathEl.textContent = '未設定';
+
+  el.append(header, progressEl, statusEl, pathEl);
+  dom.binProgress.appendChild(el);
+
+  const item = { el, progressEl, statusEl, pathEl, percentEl };
+  state.binProgress.set(label, item);
+  return item;
+}
+
+function setProgressValue(progressEl, value = 0, total = 0) {
+  if (!progressEl) return;
+  const val = Number.isFinite(value) ? value : 0;
+  if (total && Number.isFinite(total) && total > 0) {
+    const max = Math.max(total, 1);
+    progressEl.max = max;
+    progressEl.value = Math.min(max, Math.max(0, val));
+  } else {
+    progressEl.removeAttribute('max');
+    progressEl.value = Math.max(0, val);
+  }
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let val = value;
+  let unitIdx = 0;
+  while (val >= 1024 && unitIdx < units.length - 1) {
+    val /= 1024;
+    unitIdx += 1;
+  }
+  const fixed = unitIdx === 0 ? Math.round(val) : Math.round(val * 10) / 10;
+  return `${fixed} ${units[unitIdx]}`;
 }
 
 /* ---------------- 本地影片 ---------------- */

@@ -13,127 +13,701 @@
                  frame-src 'none'">
   <title>Subtitle Overlay</title>
   <style>
-    body { font: 14px/1.5 system-ui, "Noto Sans TC", sans-serif; margin: 20px; }
-    fieldset{margin-bottom:16px}
-    label{display:inline-block; min-width:120px}
-    input[type=text]{width:520px}
-    .row{margin:6px 0}
-    .btn{padding:6px 12px}
-    .mono{font-family: ui-monospace, SFMono-Regular, Consolas, monospace}
-    #localVideo { width: 720px; height: 405px; background:#111; display:block; }
-    progress { width: 320px; vertical-align: middle; }
+    :root {
+      --bg-start: #0f172a;
+      --bg-end: #1e3a8a;
+      --surface: rgba(15, 23, 42, 0.78);
+      --surface-soft: rgba(30, 41, 59, 0.68);
+      --surface-strong: rgba(15, 23, 42, 0.92);
+      --border: rgba(148, 163, 184, 0.18);
+      --border-strong: rgba(148, 163, 184, 0.35);
+      --text: #e2e8f0;
+      --text-subtle: #94a3b8;
+      --accent: #38bdf8;
+      --accent-strong: #6366f1;
+      --accent-soft: rgba(56, 189, 248, 0.25);
+      --radius: 18px;
+      --shadow: 0 20px 45px rgba(15, 23, 42, 0.45);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font: 15px/1.6 "Inter", "Noto Sans TC", system-ui, sans-serif;
+      background: radial-gradient(circle at top left, rgba(99, 102, 241, 0.35), transparent 45%),
+                  radial-gradient(circle at bottom right, rgba(56, 189, 248, 0.25), transparent 40%),
+                  linear-gradient(135deg, var(--bg-start), var(--bg-end));
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    body, button, input, select {
+      font-family: inherit;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .app-shell {
+      display: flex;
+      min-height: 100vh;
+      gap: 32px;
+      padding: 40px clamp(24px, 4vw, 56px);
+    }
+
+    .sidebar {
+      width: 340px;
+      min-width: 280px;
+      background: var(--surface-strong);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 28px;
+      position: relative;
+      transition: transform 0.3s ease, opacity 0.3s ease;
+      backdrop-filter: blur(20px);
+      overflow: hidden;
+    }
+
+    .sidebar-inner {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+      height: 100%;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .sidebar-brand {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .sidebar-brand .brand-title {
+      font-size: 1.55rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .sidebar-brand .brand-subtitle {
+      color: var(--text-subtle);
+      margin: 0;
+      font-size: 0.95rem;
+    }
+
+    .sidebar-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: calc(var(--radius) - 6px);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+
+    .sidebar-panel header h2 {
+      margin: 0 0 6px;
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+
+    .sidebar-panel header p {
+      margin: 0;
+      color: var(--text-subtle);
+      font-size: 0.88rem;
+    }
+
+    details.sidebar-panel {
+      padding: 0;
+      gap: 0;
+    }
+
+    details.sidebar-panel > summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      list-style: none;
+      cursor: pointer;
+      padding: 18px 20px;
+      font-weight: 600;
+      font-size: 0.98rem;
+      color: var(--text);
+      background: transparent;
+      border-radius: calc(var(--radius) - 6px);
+    }
+
+    details.sidebar-panel > summary::after {
+      content: '▸';
+      transition: transform 0.2s ease;
+      font-size: 0.95rem;
+      color: var(--text-subtle);
+    }
+
+    details.sidebar-panel[open] > summary::after {
+      transform: rotate(90deg);
+    }
+
+    details.sidebar-panel > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details.sidebar-panel .panel-body {
+      padding: 0 20px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .main-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .topbar {
+      background: var(--surface-strong);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .topbar h1 {
+      margin: 0 0 6px;
+      font-size: 1.8rem;
+      letter-spacing: 0.01em;
+    }
+
+    .topbar p {
+      margin: 0;
+      color: var(--text-subtle);
+      font-size: 0.95rem;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 26px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: 1.25rem;
+      letter-spacing: 0.01em;
+    }
+
+    .quick-steps {
+      margin: 8px 0 0;
+      padding-left: 20px;
+      color: var(--text-subtle);
+    }
+
+    .quick-steps li {
+      margin-bottom: 8px;
+    }
+
+    .row {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .row:last-child {
+      margin-bottom: 0;
+    }
+
+    .row label {
+      min-width: 110px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      padding-top: 8px;
+    }
+
+    .field {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    input[type="file"],
+    select {
+      flex: 1;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.55);
+      color: var(--text);
+      transition: border 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    input[type="file"]:focus,
+    select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    input[type="file"] {
+      padding: 6px 0;
+    }
+
+    select {
+      min-width: 160px;
+    }
+
+    .button-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .btn {
+      border: none;
+      border-radius: 999px;
+      padding: 9px 18px;
+      font-weight: 600;
+      cursor: pointer;
+      background: rgba(148, 163, 184, 0.18);
+      color: var(--text);
+      transition: transform 0.15s ease, background 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      background: rgba(148, 163, 184, 0.28);
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.35);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn.primary {
+      background: linear-gradient(120deg, var(--accent), var(--accent-strong));
+      color: #0f172a;
+      box-shadow: 0 10px 25px rgba(56, 189, 248, 0.35);
+    }
+
+    .btn.ghost {
+      background: transparent;
+      border: 1px solid var(--border-strong);
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .btn[data-loading="true"]::after {
+      content: '';
+      margin-left: 8px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(14, 165, 233, 0.2);
+      border-top-color: var(--accent);
+      display: inline-block;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+    }
+
+    .ghost-btn {
+      border: 1px solid var(--border-strong);
+      background: rgba(15, 23, 42, 0.55);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 9px 18px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.2s ease, transform 0.15s ease;
+    }
+
+    .ghost-btn:hover {
+      background: rgba(148, 163, 184, 0.18);
+      transform: translateY(-1px);
+    }
+
+    .ghost-btn:active {
+      transform: translateY(0);
+    }
+
+    .progress-line {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 22px;
+    }
+
+    #dlTxt {
+      color: var(--text-subtle);
+    }
+
+    progress {
+      width: clamp(180px, 40vw, 320px);
+      height: 8px;
+      -webkit-appearance: none;
+      appearance: none;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(148, 163, 184, 0.18);
+    }
+
+    progress::-webkit-progress-bar {
+      background: rgba(148, 163, 184, 0.18);
+    }
+
+    progress::-webkit-progress-value {
+      background: linear-gradient(120deg, var(--accent), var(--accent-strong));
+      border-radius: 999px;
+    }
+
+    progress::-moz-progress-bar {
+      background: linear-gradient(120deg, var(--accent), var(--accent-strong));
+    }
+
+    .hint {
+      margin: 0;
+      color: var(--text-subtle);
+      font-size: 0.85rem;
+    }
+
+    .hint .mono {
+      color: inherit;
+    }
+
+    .bin-info {
+      font-size: 0.85rem;
+      color: var(--text-subtle);
+      word-break: break-all;
+    }
+
+    .bin-progress-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .bin-progress-item {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .bin-progress-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+    }
+
+    .bin-progress-percent {
+      font-size: 0.85rem;
+      color: var(--accent);
+    }
+
+    .bin-progress-status {
+      font-size: 0.9rem;
+      color: var(--text-subtle);
+    }
+
+    .bin-progress-path {
+      font-size: 0.75rem;
+      color: var(--text-subtle);
+      word-break: break-all;
+    }
+
+    .bin-progress-item.is-error {
+      border-color: rgba(248, 113, 113, 0.6);
+      box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.25);
+    }
+
+    .bin-progress-item.is-error .bin-progress-status {
+      color: #f87171;
+    }
+
+    .bin-progress-item.is-empty {
+      opacity: 0.72;
+    }
+
+    #localVideo {
+      width: 100%;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: #0b1120;
+      min-height: 220px;
+    }
+
+    .info-row {
+      margin-top: 6px;
+      color: var(--text-subtle);
+    }
+
+    #applyMsg {
+      color: var(--accent);
+    }
+
+    .log-panel {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.6);
+      overflow: hidden;
+    }
+
+    .log-panel summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      padding: 14px 18px;
+      font-weight: 600;
+      list-style: none;
+    }
+
+    .log-panel summary::after {
+      content: '▸';
+      transition: transform 0.2s ease;
+      color: var(--text-subtle);
+    }
+
+    .log-panel[open] summary::after {
+      transform: rotate(90deg);
+    }
+
+    .log-panel summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .log-panel pre {
+      margin: 0;
+      padding: 18px;
+      max-height: 220px;
+      overflow: auto;
+      font-size: 0.85rem;
+      background: transparent;
+      color: var(--text);
+      white-space: pre-wrap;
+    }
+
+    .mono {
+      font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+
+    body.sidebar-collapsed .sidebar {
+      transform: translateX(-110%);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @media (max-width: 1180px) {
+      .app-shell {
+        flex-direction: column;
+        padding: 32px 20px 40px;
+      }
+
+      .sidebar {
+        width: 100%;
+        min-width: 100%;
+        order: 2;
+      }
+
+      body.sidebar-collapsed .sidebar {
+        transform: translateY(-8px);
+        max-height: 0;
+        opacity: 0;
+        margin-top: -12px;
+        padding-top: 0;
+        padding-bottom: 0;
+        border-width: 0;
+        box-shadow: none;
+      }
+
+      .main-area {
+        order: 1;
+      }
+    }
   </style>
 </head>
 <body>
-  <h2>Subtitle Overlay – 控制面板</h2>
-
-  <fieldset>
-    <legend>啟動檢查</legend>
-    <div class="row">
-      <button id="checkBins" class="btn">檢查/下載 yt-dlp / ffmpeg</button>
-      <span id="binInfo" class="mono"></span>
-    </div>
-  </fieldset>
-  
-  <fieldset>
-  <legend>Cookies（Netscape cookies.txt）</legend>
-  <div class="row">
-    <button id="pickCookies" class="btn">選擇 cookies.txt</button>
-    <button id="clearCookies" class="btn">清除</button>
-    <span id="cookiesView" class="mono"></span>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-inner">
+        <div class="sidebar-brand">
+          <div class="brand-title">Subtitle Overlay</div>
+          <p class="brand-subtitle">快速將字幕疊加至直播或錄製畫面</p>
+        </div>
+        <section class="sidebar-panel">
+          <header>
+            <h2>系統狀態</h2>
+            <p>先確認必要工具，開箱即用。</p>
+          </header>
+          <button id="checkBins" class="btn primary">檢查/下載 yt-dlp / ffmpeg</button>
+          <div id="binInfo" class="bin-info mono">尚未檢查</div>
+          <div id="binProgress" class="bin-progress-list"></div>
+        </section>
+        <details class="sidebar-panel" open>
+          <summary>Cookies 與授權</summary>
+          <div class="panel-body">
+            <div class="row">
+              <label>Cookies：</label>
+              <div class="field">
+                <div class="button-group">
+                  <button id="pickCookies" class="btn">選擇 cookies.txt</button>
+                  <button id="clearCookies" class="btn ghost">清除</button>
+                </div>
+                <span id="cookiesView" class="mono"></span>
+              </div>
+            </div>
+            <p class="hint">若遇到 429 或需登入，請提供 cookies。如何匯出 YouTube cookies：<span class="mono">https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies</span></p>
+          </div>
+        </details>
+        <details class="sidebar-panel">
+          <summary>字型與樣式</summary>
+          <div class="panel-body">
+            <div class="row">
+              <label>上傳字型：</label>
+              <div class="field">
+                <button id="pickFonts" class="btn">選擇 .ttf/.otf/.woff2</button>
+                <span id="fontsPicked" class="mono"></span>
+              </div>
+            </div>
+            <div class="row">
+              <label for="maxWidth">最大寬度(px)：</label>
+              <input type="number" id="maxWidth" value="1920">
+            </div>
+            <div class="row">
+              <label for="align">對齊：</label>
+              <select id="align">
+                <option value="left">置左</option>
+                <option value="center" selected>置中</option>
+                <option value="right">置右</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="background">背景：</label>
+              <select id="background">
+                <option value="transparent" selected>透明</option>
+                <option value="green">綠幕</option>
+              </select>
+            </div>
+          </div>
+        </details>
+        <details class="sidebar-panel">
+          <summary>HTTP 輸出</summary>
+          <div class="panel-body">
+            <div class="row">
+              <label for="port">端口(port)：</label>
+              <input type="number" id="port" value="1976">
+              <span class="mono">→ http://localhost:<span id="portView">1976</span>/overlay</span>
+            </div>
+            <div class="row">
+              <div class="button-group">
+                <button id="applyToOverlay" class="btn primary">載入到輸出</button>
+              </div>
+              <span id="applyMsg"></span>
+            </div>
+          </div>
+        </details>
+      </div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar">
+        <div>
+          <h1>控制面板</h1>
+          <p>專注在來源設定，其他進階項目收納於左側面板。</p>
+        </div>
+        <button id="settingsToggle" class="ghost-btn" aria-controls="sidebar" aria-expanded="true">隱藏設定</button>
+      </header>
+      <section class="card quick-start">
+        <h2>快速開始</h2>
+        <ol class="quick-steps">
+          <li>按下左側「檢查/下載」確認 yt-dlp 與 ffmpeg 已安裝。</li>
+          <li>貼上 YouTube 連結或選擇本地媒體／字幕，按需下載。</li>
+          <li>載入到輸出後，在 OBS Browser Source 指向 <span class="mono">http://localhost:<span id="quickPort">1976</span>/overlay</span>。</li>
+        </ol>
+      </section>
+      <section class="card">
+        <h2>字幕來源</h2>
+        <div class="row">
+          <label for="ytUrl">YouTube 連結：</label>
+          <div class="field">
+            <input type="text" id="ytUrl" placeholder="https://www.youtube.com/watch?v=...">
+            <div class="button-group">
+              <button id="ytDownload" class="btn primary">下載影片</button>
+              <button id="ytDownloadAudio" class="btn">下載音訊</button>
+              <button id="ytFetch" class="btn ghost">僅下載字幕</button>
+              <button id="ytCancel" class="btn ghost">取消下載</button>
+            </div>
+            <div class="progress-line">
+              <progress id="dlProg" max="100" value="0" style="display:none"></progress>
+              <span id="dlTxt" class="mono"></span>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <label for="videoFile">本地媒體：</label>
+          <input type="file" id="videoFile" accept="video/*,audio/*">
+        </div>
+        <div class="row">
+          <label>本地字幕：</label>
+          <div class="field">
+            <div class="button-group">
+              <button id="pickSubs" class="btn">選擇字幕檔</button>
+            </div>
+            <span id="subsPicked" class="mono"></span>
+          </div>
+        </div>
+        <p class="hint">若非 .ass 會自動轉成 .ass。</p>
+        <details id="ytLogWrap" class="log-panel">
+          <summary>yt-dlp 日誌</summary>
+          <pre id="ytLog"></pre>
+        </details>
+      </section>
+      <section class="card">
+        <h2>影片播放（同步 overlay 時間軸）</h2>
+        <video id="localVideo" controls></video>
+        <div class="row info-row">
+          <span id="activeCacheInfo" class="mono"></span>
+        </div>
+      </section>
+    </main>
   </div>
-  <div class="row">
-    <small>若遇到 429 或需登入，請提供 cookies。如何匯出 YouTube cookies：<span class="mono">https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies</span></small>
-  </div>
-</fieldset>
-
-  <fieldset>
-    <legend>字幕來源</legend>
-    <div class="row">
-      <label>YouTube 連結：</label>
-      <input type="text" id="ytUrl" placeholder="https://www.youtube.com/watch?v=...">
-      <button id="ytDownload" class="btn">下載影片</button>
-      <button id="ytDownloadAudio" class="btn">下載音訊</button>
-      <button id="ytCancel" class="btn">取消下載</button>
-      <button id="ytFetch" class="btn">僅下載字幕</button>
-      <progress id="dlProg" max="100" value="0" style="display:none"></progress>
-      <span id="dlTxt" class="mono"></span>
-    </div>
-    <div class="row">
-      <label>本地媒體：</label>
-      <input type="file" id="videoFile" accept="video/*,audio/*">
-    </div>
-    <div class="row">
-      <label>本地字幕：</label>
-      <button id="pickSubs" class="btn">選擇字幕檔</button>
-      <span id="subsPicked" class="mono"></span>
-    </div>
-    <div class="row"><small>若非 .ass 會自動轉成 .ass。</small></div>
-
-    <details id="ytLogWrap" style="margin-top:8px">
-      <summary style="cursor:pointer; display:flex; align-items:center; gap:8px; user-select:none">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden style="transition:transform .15s">
-          <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span>yt-dlp 日誌</span>
-      </summary>
-      <pre id="ytLog" style="background:transparent; color:rgb(0,0,0); height:200px; overflow:auto; white-space:pre-wrap; margin:8px 0 0 20px"></pre>
-    </details>
-    <style>
-      /* 讓小圖標在展開時旋轉，隱藏預設 marker */
-      #ytLogWrap[open] summary svg { transform: rotate(90deg); }
-      #ytLogWrap summary::-webkit-details-marker { display: none; }
-    </style></summary>
-  </fieldset>
-
-  <fieldset>
-    <legend>字型</legend>
-    <div class="row">
-      <label>上傳字型：</label>
-      <button id="pickFonts" class="btn">選擇 .ttf/.otf/.woff2</button>
-      <span id="fontsPicked" class="mono"></span>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>顯示樣式</legend>
-    <div class="row"><label>最大寬度(px)：</label><input type="number" id="maxWidth" value="1920"></div>
-    <div class="row"><label>對齊：</label>
-      <select id="align">
-        <option value="left">置左</option>
-        <option value="center" selected>置中</option>
-        <option value="right">置右</option>
-      </select>
-    </div>
-    <div class="row"><label>背景：</label>
-      <select id="background">
-        <option value="transparent" selected>透明</option>
-        <option value="green">綠幕</option>
-      </select>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>輸出（HTTP）</legend>
-    <div class="row">
-      <label>端口(port)：</label>
-      <input type="number" id="port" value="1976">
-      <span class="mono">  →  http://localhost:<span id="portView">1976</span>/overlay</span>
-    </div>
-    <div class="row">
-      <button id="applyToOverlay" class="btn">載入到輸出</button>
-      <span id="applyMsg"></span>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>影片播放（同步 overlay 時間軸）</legend>
-    <video id="localVideo" controls></video>
-    <div class="row">
-      <span id="activeCacheInfo" class="mono"></span>
-    </div>
-  </fieldset>
-
   <script type="module" src="./app.mjs"></script>
 </body>
 </html>
