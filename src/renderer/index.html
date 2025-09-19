@@ -277,6 +277,10 @@
       grid-template-columns: 1fr;
     }
 
+    .main-area.preview-collapsed {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .card {
       background: var(--surface-soft);
       border-radius: var(--radius-md);
@@ -699,6 +703,10 @@
       .main-area.controls-collapsed {
         grid-template-columns: 1fr;
       }
+
+      .main-area.preview-collapsed {
+        grid-template-columns: 1fr;
+      }
     }
 
     @media (max-width: 768px) {
@@ -786,7 +794,8 @@
             <p>載入字幕，並提供影片或音訊進行同步監聽或監看。<br>快速於OBS、streamlabs等軟體動態呈現！</p>
           </div>
           <div class="card-header-actions">
-            <button id="controlCardToggle" class="btn ghost small" type="button">最小化控制區</button>
+            <button id="controlCardToggle" class="btn ghost small" type="button"
+              data-label-minimize="最小化控制區" data-label-restore="顯示控制區">最小化控制區</button>
           </div>
         </header>
         <div class="stack card-body">
@@ -829,7 +838,8 @@
             <p>確認字幕同步後，將設定套用到 overlay。</p>
           </div>
           <div class="card-header-actions">
-            <button id="previewCardToggle" class="btn ghost small" type="button">最小化預覽與輸出</button>
+            <button id="previewCardToggle" class="btn ghost small" type="button"
+              data-label-minimize="最小化預覽與輸出" data-label-restore="顯示預覽與輸出">最小化預覽與輸出</button>
           </div>
         </header>
         <div class="card-body">
