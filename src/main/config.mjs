@@ -17,7 +17,8 @@ export const store = new Store({
     },
     // 新增：cookies 路徑（Netscape cookies.txt）
     cookiesPath: '',
-    downloads: []
+    downloads: [],
+    fonts: []
   }
 });
 

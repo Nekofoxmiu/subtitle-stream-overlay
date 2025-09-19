@@ -10,9 +10,23 @@ export class OverlayServer {
     this.assetsDir = assetsDir;
     this.userDataPath = userDataPath;
 
+    const persistedFonts = store.get('fonts');
+    const fontBuffers = Array.isArray(persistedFonts)
+      ? persistedFonts
+          .filter((font) => font && typeof font === 'object')
+          .map((font) => {
+            const normalized = {};
+            if (typeof font.name === 'string' && font.name) normalized.name = font.name;
+            if (typeof font.data === 'string' && font.data) normalized.data = font.data;
+            if (typeof font.url === 'string' && font.url) normalized.url = font.url;
+            return normalized;
+          })
+          .filter((font) => font.data || font.url)
+      : [];
+
     this.state = {
       subContent: '',
-      fontBuffers: [],
+      fontBuffers,
       style: store.get('output')
     };
     this.app = express();
