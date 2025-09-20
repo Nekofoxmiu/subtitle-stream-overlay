@@ -31,6 +31,10 @@ export class OverlayServer {
     };
     this.app = express();
     this.server = http.createServer(this.app);
+    this.server.on('error', (err) => {
+      if (!this.server.listening) return;
+      console.error('[overlayServer] server error', err);
+    });
     this.wss = new WebSocketServer({ server: this.server });
     this.setupRoutes();
     this.setupWs();
@@ -89,8 +93,20 @@ export class OverlayServer {
 
   listen(port) {
     return new Promise((resolve, reject) => {
-      this.server.listen(port, () => resolve());
-      this.server.on('error', reject);
+      const normalizedPort = typeof port === 'number' ? port : Number.parseInt(port, 10);
+      if (!Number.isInteger(normalizedPort) || normalizedPort < 0 || normalizedPort > 65535) {
+        reject(new Error('Invalid port value: ' + port));
+        return;
+      }
+      const handleServerError = (err) => {
+        this.server.removeListener('error', handleServerError);
+        reject(err);
+      };
+      this.server.once('error', handleServerError);
+      this.server.listen(normalizedPort, () => {
+        this.server.removeListener('error', handleServerError);
+        resolve();
+      });
     });
   }
   close() {
@@ -117,3 +133,4 @@ export class OverlayServer {
     });
   }
 }
+

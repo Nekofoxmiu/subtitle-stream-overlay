@@ -661,17 +661,35 @@ function updateBinStatusIndicator(ev) {
       : null;
   if (!iconEl) return;
 
-  if (ev.status === 'error') {
+  const stage = ev?.stage;
+  const status = ev?.status;
+
+  if (stage === 'update') {
+    if (status === 'error') {
+      applyBinStatus(iconEl, { available: true, pending: false, tooltip: ev.message || '' });
+      return;
+    }
+    if (status === 'done') {
+      applyBinStatus(iconEl, { available: true, pending: false, tooltip: ev.message || '' });
+      return;
+    }
+    if (status === 'start' || status === 'progress') {
+      applyBinStatus(iconEl, { available: true, pending: true, tooltip: ev.message || '' });
+      return;
+    }
+  }
+
+  if (status === 'error') {
     applyBinStatus(iconEl, { available: false, pending: false, tooltip: ev.message || '' });
     return;
   }
 
-  if (ev.status === 'start' || ev.status === 'progress' || (ev.status === 'done' && ev.stage !== 'ready')) {
+  if (status === 'start' || status === 'progress' || (status === 'done' && stage !== 'ready')) {
     applyBinStatus(iconEl, { available: false, pending: true });
     return;
   }
 
-  if (ev.status === 'done' && ev.stage === 'ready') {
+  if (status === 'done' && stage === 'ready') {
     applyBinStatus(iconEl, { available: true, pending: false });
   }
 }

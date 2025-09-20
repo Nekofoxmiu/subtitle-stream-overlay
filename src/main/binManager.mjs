@@ -2,6 +2,7 @@ import { app, dialog } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { pipeline, Transform } from 'node:stream';
+import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import extract from 'extract-zip';
 import fetch from 'node-fetch';
@@ -168,4 +169,63 @@ export async function checkAndOfferDownload(mainWindow) {
 
   ({ ytDlpPath, ffmpegPath } = persistBinPaths({ ytDlpPath, ffmpegPath }));
   return { ytDlpPath, ffmpegPath };
+}
+
+export async function updateYtDlpIfAvailable(mainWindow) {
+  const { ytDlpPath } = getBinPaths();
+  if (!ytDlpPath || !fs.existsSync(ytDlpPath)) return false;
+
+  const id = 'yt-dlp';
+  const label = 'yt-dlp';
+  emitBinProgress(mainWindow, { id, label, stage: 'update', status: 'start' });
+
+  const cwd = path.dirname(ytDlpPath);
+  const stdoutChunks = [];
+  const stderrChunks = [];
+
+  const runUpdate = () => new Promise((resolve, reject) => {
+    const proc = spawn(ytDlpPath, ['-U'], { cwd, windowsHide: true });
+    proc.stdout.on('data', (chunk) => {
+      if (!chunk) return;
+      const textChunk = chunk.toString();
+      stdoutChunks.push(textChunk);
+      const trimmed = textChunk.trim();
+      if (trimmed) console.log('[yt-dlp] ' + trimmed);
+    });
+    proc.stderr.on('data', (chunk) => {
+      if (!chunk) return;
+      const textChunk = chunk.toString();
+      stderrChunks.push(textChunk);
+      const trimmed = textChunk.trim();
+      if (trimmed) console.error('[yt-dlp] ' + trimmed);
+    });
+    proc.once('error', reject);
+    proc.once('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        const stderrText = stderrChunks.join('').trim();
+        const stdoutText = stdoutChunks.join('').trim();
+        reject(new Error(stderrText || stdoutText || ('yt-dlp -U exited with code ' + code)));
+      }
+    });
+  });
+
+  try {
+    await runUpdate();
+    const stdoutText = stdoutChunks.join('');
+    const normalized = stdoutText.toLowerCase();
+    let message = 'yt-dlp 更新完成';
+    if (normalized.includes('up to date') || normalized.includes('already up-to-date')) {
+      message = 'yt-dlp 已是最新版本';
+    }
+    emitBinProgress(mainWindow, { id, label, stage: 'update', status: 'done', percent: 100, message });
+    return true;
+  } catch (err) {
+    const baseMessage = err && typeof err.message === 'string' ? err.message : '';
+    const message = baseMessage || 'yt-dlp 更新失敗';
+    emitBinProgress(mainWindow, { id, label, stage: 'update', status: 'error', message });
+    console.error('[bins] yt-dlp 更新失敗', err);
+    return false;
+  }
 }
