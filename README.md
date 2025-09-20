@@ -4,11 +4,11 @@
 Subtitle Stream Overlay 是一套以 Electron 建構的字幕疊加工具，內建 HTTP/WS 伺服器與 SubtitlesOctopus 渲染器，能將 ASS/SRT 字幕輸出為綠幕或透明背景，方便串流或錄影軟體直接套用，提供方便的KTV字幕或是直播字幕播放服務。
 
 ## 功能特色
-- **整合式疊加伺服器**：應用啟動後會建置一個 Express + WebSocket 伺服器，提供 `/overlay` 頁面、`/state` API 以及字幕/字型資源路徑，可在同一台機器的瀏覽器或串流軟體內直接讀取。
+- **整合式疊加伺服器**：提供 `/overlay` 頁面、`/state` API 以及字幕/字型資源路徑，可在瀏覽器或串流軟體內直接讀取。
   
-- **彈性的字幕樣式**：疊加端會依據設定自動調整背景（透明或綠幕）、左右對齊與最大寬度，並根據字幕檔的 PlayRes 進行等比縮放；可載入內建或使用者上傳的字型以確保排版一致。
+- **彈性的字幕樣式**：可輸出透明背景或綠幕、調整對齊方式與設定最大寬度，並根據字幕檔的畫面大小進行等比縮放；可載入內建或使用者上傳的字型。
   
-- **本地與線上字幕來源**：介面支援匯入 ASS/SRT/VTT/SSA 字幕，必要時會自動轉換成 ASS；也能掃描快取清單並快速套用至疊加畫面。
+- **本地與線上字幕來源**：介面支援匯入 ASS/SRT/VTT/SSA 字幕，並自動轉換成 ASS；也支持從快取直接讀入。
   
 - **影片/字幕快取管理與預覽**：所有下載或匯入的媒體會被存放於應用程式資料夾，使用者可從清單選擇項目、於內建播放器預覽並與疊加畫面同步時間軸。
     
@@ -20,13 +20,17 @@ Subtitle Stream Overlay 是一套以 Electron 建構的字幕疊加工具，內�
 ## 使用流程
 ![image](https://github.com/Nekofoxmiu/subtitle-stream-overlay/blob/main/showcase_pic/showcase_1.png?raw=true)
 ![image](https://github.com/Nekofoxmiu/subtitle-stream-overlay/blob/main/showcase_pic/showcase_2.png?raw=true)
-
-1. **首次檢查工具**：開啟應用時若缺少 yt-dlp 或 FFmpeg，介面會提示是否自動下載並顯示進度；完成後即可在上方狀態列看到可用的路徑。
+  
+- 影片所有者：角蓮Caren(@Caren_surfdemon)  
+- 影片來源：[強風オールバック／Yukopi｜cover by 角蓮Caren](https://www.youtube.com/watch?v=OAWxCekrGEI)  
+- 此外感謝角蓮的發想，雖然並不是多複雜的程式，但確實算是具有特色以及目前似乎沒有看見同類功能的應用。
+  
+1. **首次檢查工具**：開啟應用時若缺少 yt-dlp 或 FFmpeg，介面會提示是否自動下載並顯示進度；完成後即可在上方狀態列看到可用的提示。
      
 2. **匯入或下載素材**：
    - 點選「選取字幕」匯入本地檔案，會自動轉為 ASS 並儲存至快取。
      
-   - 輸入 YouTube 連結後可選擇下載只下載字幕或下載影片/音訊同時下載字幕，支援語言選擇與進度回報。
+   - 輸入 YouTube 連結後可選擇下載只下載字幕或下載影片/音訊同時下載字幕，支援語言選擇與進度回報。(因此其實理論上這個也可以當作一個YT下載GUI來用就是)
       
    - 亦可匯入本地影片檔或直接使用快取中的檔案於內建播放器預覽。
      
