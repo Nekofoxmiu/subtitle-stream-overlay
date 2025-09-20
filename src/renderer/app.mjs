@@ -93,7 +93,7 @@ class OverlaySync {
   constructor(videoEl) {
     this.ws = null;
     this.timer = null;
-    this.port = 59777;
+    this.port = 59837;
     this.video = videoEl;
   }
   connect(port) {
@@ -1213,7 +1213,7 @@ function clampVolume(value) {
 /* ---------------- 樣式設定 ---------------- */
 function getCurrentPort() {
   const port = parseInt(dom.portInput?.value, 10);
-  return Number.isFinite(port) ? port : 59777;
+  return Number.isFinite(port) ? port : 59837;
 }
 
 function collectStyle() {

@@ -6,7 +6,7 @@ export const store = new Store({
     bins: { ytDlpPath: '', ffmpegPath: '' },
     output: {
       mode: 'http',
-      port: 59777,
+      port: 59837,
       background: 'transparent',
       maxWidth: 1920,
       align: 'center',

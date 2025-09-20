@@ -53,7 +53,7 @@ app.whenReady().then(async () => {
       assetsDir: ASSETS_DIR,
       userDataPath: app.getPath('userData')
     });
-    currentOverlayPort = output?.port ?? 59777;
+    currentOverlayPort = output?.port ?? 59837;
     await overlayServer.listen(currentOverlayPort);
   }
 });
@@ -61,7 +61,7 @@ app.whenReady().then(async () => {
 // Restart overlay server when config output.port changes.
 app.on('config:changed', async (newConfig) => {
   try {
-    const newPort = newConfig?.output?.port ?? 59777;
+    const newPort = newConfig?.output?.port ?? 59837;
     if (Number(newPort) === Number(currentOverlayPort)) return;
     // Close existing server if any
     if (overlayServer) {
