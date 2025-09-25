@@ -5,6 +5,7 @@ let octopus = null;
 let lastSub = '';
 let lastTime = 0;
 let lastFonts = [];                // overlay 端實際交給 Octopus 的字型 URL（包含 Blob URL 或公開 URL）
+let lastRefreshToken = null;
 let fontBlobUrls = [];             // 僅記錄本次建立的 Blob URL，方便釋放
 let currentPlayRes = { x: 1920, y: 1080 };
 let currentStyle   = { maxWidth: 1920, align: 'center', background: 'transparent', subtitleOffsetSeconds: 0 };
@@ -166,6 +167,16 @@ ws.onmessage = async (ev) => {
   const { type, payload } = JSON.parse(ev.data);
   if (type === 'state') {
     if (!payload) return;
+
+    const incomingTokenRaw = payload.refreshToken;
+    const nextRefreshToken = incomingTokenRaw == null ? null : String(incomingTokenRaw);
+    const refreshRequested = nextRefreshToken !== null && nextRefreshToken !== lastRefreshToken;
+    if (refreshRequested) {
+      disposeOctopus();
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
+    }
+    lastRefreshToken = nextRefreshToken;
 
     // 1) 先套樣式與尺寸；若尺寸改變，觸發重建
     const incomingStyle = payload.style || {};

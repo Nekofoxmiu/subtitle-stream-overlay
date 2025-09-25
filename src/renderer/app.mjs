@@ -74,7 +74,8 @@ const state = {
   previewMaximized: false,
   downloadProgressStarted: false,
   downloadStatusMessage: '',
-  playerVolume: 1
+  playerVolume: 1,
+  overlayRefreshSeq: 0
 };
 
 const persistVolumeSetting = debounce((volume) => {
@@ -309,12 +310,15 @@ function setupEventHandlers() {
   dom.applyToOverlay?.addEventListener('click', async () => {
     const style = collectStyle();
     await persistStyle(style);
+    state.overlayRefreshSeq += 1;
+    const refreshToken = `${Date.now()}-${state.overlayRefreshSeq}`;
     window.api.notifyOverlay({
       style,
       subContent: state.currentAssText,
-      fontBuffers: state.currentFonts
+      fontBuffers: state.currentFonts,
+      refreshToken
     });
-    dom.applyMsg.textContent = `已更新。請以 OBS Browser Source 指向 http://localhost:${style.port}/overlay`;
+    dom.applyMsg.textContent = `已更新。請以 OBS Browser Source 指向 http://localhost:${style.port}/overlay 或使用REALESE 中的 HTML 檔案。`;
     syncOverlayConnection();
   });
 }
