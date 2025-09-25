@@ -1,6 +1,6 @@
 {
   "name": "subtitle-stream-overlay",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "ASS/SRT subtitle overlay (green/transparent) via Electron + SubtitlesOctopus",
   "main": "src/main/main.mjs",
   "scripts": {

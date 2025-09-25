@@ -10,7 +10,9 @@ export const store = new Store({
       background: 'transparent',
       maxWidth: 1920,
       align: 'center',
-      wrapStyle: 2
+      wrapStyle: 2,
+      subtitleOffsetMode: 'advance',
+      subtitleOffsetSeconds: 0
     },
     player: {
       volume: 0.8

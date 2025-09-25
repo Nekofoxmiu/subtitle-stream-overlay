@@ -7,7 +7,10 @@ let lastTime = 0;
 let lastFonts = [];                // overlay 端實際交給 Octopus 的字型 URL（包含 Blob URL 或公開 URL）
 let fontBlobUrls = [];             // 僅記錄本次建立的 Blob URL，方便釋放
 let currentPlayRes = { x: 1920, y: 1080 };
-let currentStyle   = { maxWidth: 1920, align: 'center', background: 'transparent' };
+let currentStyle   = { maxWidth: 1920, align: 'center', background: 'transparent', subtitleOffsetSeconds: 0 };
+const TIME_OFFSET_EPSILON = 1e-6;
+let currentTimeOffset = 0;
+let lastBaseTime = 0;
 
 const wrap   = document.getElementById('wrap');
 const canvas = document.getElementById('overlay');
@@ -35,6 +38,14 @@ function setBodyBg(mode) {
   document.body.classList.remove('gs-green', 'gs-transparent');
   document.body.classList.add(mode === 'green' ? 'gs-green' : 'gs-transparent');
 }
+
+
+function normalizeOffsetSeconds(value) {
+  const raw = typeof value === 'number' ? value : Number.parseFloat(String(value ?? '').trim());
+  if (!Number.isFinite(raw) || Math.abs(raw) < TIME_OFFSET_EPSILON) return 0;
+  return raw;
+}
+
 
 /**
  * 等比套用樣式與畫布大小；回傳是否尺寸有變（需要重建/重繪）
@@ -143,8 +154,10 @@ async function makeOctopus(subText, fontBuffers, workerUrl) {
   });
 
   // 回到上次時間點（若有）
-  if (typeof lastTime === 'number' && lastTime > 0) {
-    try { octopus.setCurrentTime(lastTime); } catch {}
+  const targetTime = Math.max(0, lastBaseTime + currentTimeOffset);
+  lastTime = targetTime;
+  if (targetTime > 0) {
+    try { octopus.setCurrentTime(targetTime); } catch {}
   }
 }
 
@@ -155,8 +168,29 @@ ws.onmessage = async (ev) => {
     if (!payload) return;
 
     // 1) 先套樣式與尺寸；若尺寸改變，觸發重建
-    const sizeChanged = applyStyleAndSize(payload.style || {}, currentPlayRes);
+    const incomingStyle = payload.style || {};
+    const sizeChanged = applyStyleAndSize(incomingStyle, currentPlayRes);
     if (sizeChanged) onSizePossiblyChanged();
+
+    let nextOffset = normalizeOffsetSeconds(incomingStyle.subtitleOffsetNetSeconds);
+    if (nextOffset === 0) {
+      const mode = incomingStyle.subtitleOffsetMode === 'delay' ? 'delay' : 'advance';
+      const magnitude = normalizeOffsetSeconds(incomingStyle.subtitleOffsetSeconds);
+      if (magnitude !== 0) nextOffset = mode === 'delay' ? -magnitude : magnitude;
+    }
+    if (nextOffset === 0 && (incomingStyle.subtitleAdvanceSeconds || incomingStyle.subtitleDelaySeconds)) {
+      const adv = normalizeOffsetSeconds(incomingStyle.subtitleAdvanceSeconds);
+      const delay = normalizeOffsetSeconds(incomingStyle.subtitleDelaySeconds);
+      const diff = adv - delay;
+      nextOffset = Math.abs(diff) < TIME_OFFSET_EPSILON ? 0 : diff;
+    }
+    const targetTime = Math.max(0, lastBaseTime + nextOffset);
+    const offsetChanged = nextOffset !== currentTimeOffset;
+    currentTimeOffset = nextOffset;
+    lastTime = targetTime;
+    if (offsetChanged && octopus) {
+      try { octopus.setCurrentTime(targetTime); } catch {}
+    }
 
     // 2) 決定是否需新建或更新字幕/字型
     const newSub   = (payload.subContent || '').trim();
@@ -179,9 +213,13 @@ ws.onmessage = async (ev) => {
       // 若僅 style 變更且尺寸未變，不需任何動作
     }
   } else if (type === 'setTime') {
-    if (octopus && typeof payload?.t === 'number') {
-      lastTime = payload.t;
-      try { octopus.setCurrentTime(lastTime); } catch {}
+    if (typeof payload?.t === 'number') {
+      lastBaseTime = payload.t;
+      const adjusted = Math.max(0, lastBaseTime + currentTimeOffset);
+      lastTime = adjusted;
+      if (octopus) {
+        try { octopus.setCurrentTime(adjusted); } catch {}
+      }
     }
   }
 };

@@ -543,7 +543,7 @@
     }
 
     .app-shell.preview-maximized #previewCard .apply-row {
-      justify-content: flex-end;
+      justify-content: space-between;
     }
 
     .info-line {
@@ -560,6 +560,55 @@
     }
 
     #applyMsg {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .subtitle-offset-control .subtitle-offset-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .subtitle-offset-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .subtitle-offset-text {
+      font-weight: 600;
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+
+    .subtitle-offset-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .subtitle-offset-control .btn {
+      height: 40px;
+      width: 120px;
+      justify-content: center;
+    }
+
+    .subtitle-offset-control input[type="number"] {
+      height: 40px;
+      width: 80px;
+      text-align: center;
+    }
+
+    .subtitle-offset-control input[type="number"]::-webkit-inner-spin-button,
+    .subtitle-offset-control input[type="number"]::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    .subtitle-offset-preview {
       font-size: 13px;
       color: var(--text-secondary);
     }
@@ -879,7 +928,15 @@
         <div class="card-body">
           <div class="preview-area">
             <video id="localVideo" controls></video>
-            <div id="activeCacheInfo" class="info-line mono"></div>
+          </div>
+          <div class="subtitle-offset-panel">
+            <div class="subtitle-offset-row">
+              <div class="subtitle-offset-control">
+                <button id="subtitleOffsetToggle" class="btn ghost" type="button" aria-pressed="false">字幕提前</button>
+                <input type="number" id="subtitleOffsetSeconds" min="0" step="any" value="0" inputmode="decimal" aria-label="字幕時間調整秒數">
+                <div class="subtitle-offset-text">秒</div>
+              </div>
+            </div>
           </div>
           <div class="apply-row">
             <button id="applyToOverlay" class="btn primary">強制刷新 Overlay</button>
@@ -996,10 +1053,11 @@
               <path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                 stroke-linejoin="round" />
             </svg>
-            下載記錄
+            Log
           </span>
         </summary>
         <div class="accordion-content">
+          <div id="activeCacheInfo" class="info-line mono"></div>
           <details id="ytLogWrap">
             <summary>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
