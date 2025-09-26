@@ -33,6 +33,7 @@ const dom = {
   align: $('#align'),
   maxWidth: $('#maxWidth'),
   applyToOverlay: $('#applyToOverlay'),
+  clearOverlay: $('#clearOverlay'),
   activeCacheInfo: $('#activeCacheInfo'),
   toggleAdvanced: $('#toggleAdvanced'),
   closeAdvanced: $('#closeAdvanced'),
@@ -319,6 +320,16 @@ function setupEventHandlers() {
       refreshToken
     });
     dom.applyMsg.textContent = `已更新。請以 OBS Browser Source 指向 http://localhost:${style.port}/overlay 或使用REALESE 中的 HTML 檔案。`;
+    syncOverlayConnection();
+  });
+
+  dom.clearOverlay?.addEventListener('click', () => {
+    state.overlayRefreshSeq += 1;
+    const clearToken = `clear-${Date.now()}-${state.overlayRefreshSeq}`;
+    window.api.notifyOverlay({ clearToken });
+    window.api.notifyOverlay({ clearToken: null });
+    const port = getCurrentPort();
+    dom.applyMsg.textContent = `已清除 Overlay 畫面，持續播放仍會顯示後續字幕。如需重新載入請使用 http://localhost:${port}/overlay。`;
     syncOverlayConnection();
   });
 }

@@ -6,6 +6,9 @@ let lastSub = '';
 let lastTime = 0;
 let lastFonts = [];                // overlay 端實際交給 Octopus 的字型 URL（包含 Blob URL 或公開 URL）
 let lastRefreshToken = null;
+let lastClearToken = null;
+let manualClearHold = false;             // keep canvas blank after manual clear until playback resumes
+let lastFontBuffers = null;
 let fontBlobUrls = [];             // 僅記錄本次建立的 Blob URL，方便釋放
 let currentPlayRes = { x: 1920, y: 1080 };
 let currentStyle   = { maxWidth: 1920, align: 'center', background: 'transparent', subtitleOffsetSeconds: 0 };
@@ -125,7 +128,9 @@ const rebuildDebounced = (() => {
 async function rebuildWithLast() {
   if (!lastSub.trim()) return;
   const workerUrl = WORKER_URL; // 或：await pickWorkerUrl();
-  await makeOctopus(lastSub, lastFonts, workerUrl);
+  const fontsPayload = lastFontBuffers ?? lastFonts;
+
+  await makeOctopus(lastSub, fontsPayload, workerUrl);
 }
 
 function onSizePossiblyChanged() {
@@ -144,7 +149,11 @@ async function makeOctopus(subText, fontBuffers, workerUrl) {
   currentPlayRes = extractPlayRes(lastSub);
   applyStyleAndSize(currentStyle, currentPlayRes);
 
-  lastFonts = makeFontUrls(fontBuffers);
+  const fontSource = Array.isArray(fontBuffers) ? fontBuffers : null;
+  if (fontSource && (!fontSource.length || typeof fontSource[0] === 'object')) {
+    lastFontBuffers = fontSource;
+  }
+  lastFonts = makeFontUrls(fontSource);
 
   // eslint-disable-next-line no-undef
   octopus = new SubtitlesOctopus({
@@ -160,6 +169,7 @@ async function makeOctopus(subText, fontBuffers, workerUrl) {
   if (targetTime > 0) {
     try { octopus.setCurrentTime(targetTime); } catch {}
   }
+  manualClearHold = false;
 }
 
 // --- 訊息處理 ---
@@ -172,11 +182,30 @@ ws.onmessage = async (ev) => {
     const nextRefreshToken = incomingTokenRaw == null ? null : String(incomingTokenRaw);
     const refreshRequested = nextRefreshToken !== null && nextRefreshToken !== lastRefreshToken;
     if (refreshRequested) {
+      manualClearHold = false;
       disposeOctopus();
       const ctx = canvas.getContext('2d');
       if (ctx) ctx.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
     }
     lastRefreshToken = nextRefreshToken;
+
+    const incomingClearTokenRaw = payload.clearToken;
+    let shouldClearCanvas = false;
+    if (incomingClearTokenRaw == null) {
+      if (lastClearToken !== null) lastClearToken = null;
+    } else {
+      const nextClearToken = String(incomingClearTokenRaw);
+      if (nextClearToken !== lastClearToken) {
+        lastClearToken = nextClearToken;
+        shouldClearCanvas = true;
+      }
+    }
+    if (shouldClearCanvas) {
+      manualClearHold = true;
+      disposeOctopus();
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
+    }
 
     // 1) 先套樣式與尺寸；若尺寸改變，觸發重建
     const incomingStyle = payload.style || {};
@@ -204,17 +233,32 @@ ws.onmessage = async (ev) => {
     }
 
     // 2) 決定是否需新建或更新字幕/字型
-    const newSub   = (payload.subContent || '').trim();
-    const hasFonts = Array.isArray(payload.fontBuffers) && payload.fontBuffers.length > 0;
+    const newSub = (payload.subContent || '').trim();
+    const incomingFontBuffers = Array.isArray(payload.fontBuffers) ? payload.fontBuffers : null;
+    const hasFonts = Array.isArray(incomingFontBuffers) && incomingFontBuffers.length > 0;
+
+    if (manualClearHold) {
+      if (hasFonts) lastFontBuffers = incomingFontBuffers;
+      if (newSub) {
+        lastSub = newSub;
+        currentPlayRes = extractPlayRes(lastSub);
+        const changed = applyStyleAndSize(currentStyle, currentPlayRes);
+        if (changed) onSizePossiblyChanged();
+      }
+      return;
+    }
+
+    const baseSub = newSub || lastSub;
+    const fontPayload = incomingFontBuffers ?? lastFontBuffers;
 
     if (!octopus) {
-      if (newSub) await makeOctopus(newSub, payload.fontBuffers, WORKER_URL);
+      if (baseSub) await makeOctopus(baseSub, fontPayload, WORKER_URL);
     } else {
       if (hasFonts) {
         // 字型更換需重建
-        await makeOctopus(newSub || lastSub, payload.fontBuffers, WORKER_URL);
+        if (baseSub) await makeOctopus(baseSub, fontPayload, WORKER_URL);
       } else if (newSub) {
-        // 只換字幕：更新比例→必要時調整尺寸→setTrack
+        // 只有字幕內容更新時，直接呼叫 setTrack
         lastSub = newSub;
         currentPlayRes = extractPlayRes(lastSub);
         const changed = applyStyleAndSize(currentStyle, currentPlayRes);
@@ -225,9 +269,13 @@ ws.onmessage = async (ev) => {
     }
   } else if (type === 'setTime') {
     if (typeof payload?.t === 'number') {
+      const prevTime = lastTime;
       lastBaseTime = payload.t;
       const adjusted = Math.max(0, lastBaseTime + currentTimeOffset);
       lastTime = adjusted;
+      if (manualClearHold && adjusted > prevTime + TIME_OFFSET_EPSILON && lastSub) {
+        await rebuildWithLast();
+      }
       if (octopus) {
         try { octopus.setCurrentTime(adjusted); } catch {}
       }

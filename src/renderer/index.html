@@ -236,6 +236,16 @@
       box-shadow: 0 16px 28px -12px rgba(37, 99, 235, 0.7);
     }
 
+    .btn.danger {
+      background: linear-gradient(135deg, #ef4444, #b91c1c);
+      color: #fff;
+      box-shadow: 0 12px 24px -12px rgba(239, 68, 68, 0.65);
+    }
+
+    .btn.danger:hover {
+      box-shadow: 0 16px 28px -12px rgba(239, 68, 68, 0.7);
+    }
+
     .btn.ghost {
       background: transparent;
       border: 1px solid rgba(148, 163, 184, 0.4);
@@ -940,6 +950,7 @@
           </div>
           <div class="apply-row">
             <button id="applyToOverlay" class="btn primary">強制刷新 Overlay</button>
+            <button id="clearOverlay" class="btn danger" type="button">清除畫面</button>
             <span id="applyMsg"></span>
           </div>
         </div>
