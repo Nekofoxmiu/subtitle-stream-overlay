@@ -32,6 +32,8 @@ const dom = {
   background: $('#background'),
   align: $('#align'),
   maxWidth: $('#maxWidth'),
+  subtitleOffsetToggle: $('#subtitleOffsetToggle'),
+  subtitleOffsetSeconds: $('#subtitleOffsetSeconds'),
   applyToOverlay: $('#applyToOverlay'),
   clearOverlay: $('#clearOverlay'),
   activeCacheInfo: $('#activeCacheInfo'),
@@ -76,6 +78,8 @@ const state = {
   downloadProgressStarted: false,
   downloadStatusMessage: '',
   playerVolume: 1,
+  subtitleOffsetMode: 'advance',
+  subtitleOffsetSeconds: 0,
   overlayRefreshSeq: 0
 };
 
@@ -153,6 +157,85 @@ function updateFontsLabel(fonts = state.currentFonts) {
   dom.fontsPicked.textContent = names.join(', ');
 }
 
+const OFFSET_EPSILON = 1e-6;
+const SUBTITLE_OFFSET_LABELS = {
+  advance: '字幕提前',
+  delay: '字幕延後'
+};
+
+function normalizeSubtitleOffsetMode(value) {
+  return value === 'delay' ? 'delay' : 'advance';
+}
+
+function sanitizeSubtitleOffsetSeconds(value) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) return 0;
+    return value;
+  }
+  const str = String(value ?? '').trim();
+  if (!str) return 0;
+  const normalized = str.replace(',', '.');
+  const num = Number.parseFloat(normalized);
+  if (!Number.isFinite(num) || num < 0) return 0;
+  return num;
+}
+
+function updateSubtitleOffsetUI() {
+  const btn = dom.subtitleOffsetToggle;
+  if (!btn) return;
+  const labels = {
+    advance: btn.dataset?.labelAdvance || SUBTITLE_OFFSET_LABELS.advance,
+    delay: btn.dataset?.labelDelay || SUBTITLE_OFFSET_LABELS.delay
+  };
+  const mode = normalizeSubtitleOffsetMode(state.subtitleOffsetMode);
+  state.subtitleOffsetMode = mode;
+  const label = mode === 'delay' ? labels.delay : labels.advance;
+  btn.textContent = label;
+  btn.setAttribute('aria-pressed', mode === 'delay' ? 'true' : 'false');
+  btn.setAttribute('aria-label', label);
+}
+
+function setSubtitleOffsetState({ mode, seconds } = {}) {
+  state.subtitleOffsetMode = normalizeSubtitleOffsetMode(mode);
+  state.subtitleOffsetSeconds = sanitizeSubtitleOffsetSeconds(seconds);
+  if (dom.subtitleOffsetSeconds) {
+    dom.subtitleOffsetSeconds.value = String(state.subtitleOffsetSeconds);
+  }
+  updateSubtitleOffsetUI();
+}
+
+async function syncSubtitleOffset({ mode = null, seconds = null, refresh = false } = {}) {
+  const nextMode = normalizeSubtitleOffsetMode(mode ?? state.subtitleOffsetMode);
+  const rawSeconds = seconds ?? (dom.subtitleOffsetSeconds ? dom.subtitleOffsetSeconds.value : state.subtitleOffsetSeconds);
+  const nextSeconds = sanitizeSubtitleOffsetSeconds(rawSeconds);
+  const prevMode = state.subtitleOffsetMode;
+  const prevSeconds = state.subtitleOffsetSeconds;
+  const modeChanged = nextMode !== prevMode;
+  const secondsChanged = Math.abs(nextSeconds - prevSeconds) > OFFSET_EPSILON;
+
+  state.subtitleOffsetMode = nextMode;
+  state.subtitleOffsetSeconds = nextSeconds;
+
+  if (dom.subtitleOffsetSeconds) {
+    dom.subtitleOffsetSeconds.value = String(nextSeconds);
+  }
+  updateSubtitleOffsetUI();
+
+  const shouldPersist = modeChanged || secondsChanged;
+  const shouldRefresh = refresh || modeChanged || secondsChanged;
+
+  if (!shouldPersist && !shouldRefresh) return;
+
+  const style = collectStyle();
+  if (shouldPersist) await persistStyle(style);
+  const patch = { style };
+  if (shouldRefresh) {
+    state.overlayRefreshSeq += 1;
+    patch.refreshToken = `offset-${Date.now()}-${state.overlayRefreshSeq}`;
+  }
+  window.api.notifyOverlay(patch);
+}
+
 /* ---------------- 初始化 ---------------- */
 (async function init() {
   setupEventHandlers();
@@ -170,13 +253,15 @@ async function loadInitialConfig() {
   const storedFonts = Array.isArray(cfg?.fonts) ? cfg.fonts.map(normalizeFontBuffer).filter(Boolean) : [];
   state.currentFonts = storedFonts;
   updateFontsLabel(storedFonts);
-  if (cfg?.output) {
-    const { output } = cfg;
-    if (output.port != null) dom.portInput.value = String(output.port);
-    if (output.maxWidth != null) dom.maxWidth.value = String(output.maxWidth);
-    if (output.align) dom.align.value = output.align;
-    if (output.background) dom.background.value = output.background;
-  }
+  const output = cfg?.output || {};
+  if (output.port != null) dom.portInput.value = String(output.port);
+  if (output.maxWidth != null) dom.maxWidth.value = String(output.maxWidth);
+  if (output.align) dom.align.value = output.align;
+  if (output.background) dom.background.value = output.background;
+  setSubtitleOffsetState({
+    mode: output.subtitleOffsetMode,
+    seconds: output.subtitleOffsetSeconds
+  });
   const storedVolume = cfg?.player?.volume;
   const initialVolume = clampVolume(storedVolume != null ? storedVolume : dom.video?.volume ?? 1);
   state.playerVolume = initialVolume;
@@ -307,6 +392,29 @@ function setupEventHandlers() {
   dom.portInput?.addEventListener('input', () => {
     dom.portView.textContent = dom.portInput.value || '';
   });
+
+  if (dom.subtitleOffsetToggle) {
+    dom.subtitleOffsetToggle.addEventListener('click', async () => {
+      const nextMode = state.subtitleOffsetMode === 'delay' ? 'advance' : 'delay';
+      try {
+        await syncSubtitleOffset({ mode: nextMode, refresh: true });
+      } finally {
+        dom.subtitleOffsetToggle.blur();
+      }
+    });
+  }
+
+  if (dom.subtitleOffsetSeconds) {
+    dom.subtitleOffsetSeconds.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === 'NumpadEnter') {
+        ev.preventDefault();
+        dom.subtitleOffsetSeconds.blur();
+      }
+    });
+    dom.subtitleOffsetSeconds.addEventListener('blur', async () => {
+      await syncSubtitleOffset({ seconds: dom.subtitleOffsetSeconds.value, refresh: true });
+    });
+  }
 
   dom.applyToOverlay?.addEventListener('click', async () => {
     const style = collectStyle();
@@ -1068,7 +1176,14 @@ async function loadAssIntoOverlay(assPath) {
   state.currentAssText = assText;
   const style = collectStyle();
   await persistStyle(style);
-  window.api.notifyOverlay({ style, subContent: state.currentAssText, fontBuffers: state.currentFonts });
+  state.overlayRefreshSeq += 1;
+  const refreshToken = `subs-${Date.now()}-${state.overlayRefreshSeq}`;
+  window.api.notifyOverlay({
+    style,
+    subContent: state.currentAssText,
+    fontBuffers: state.currentFonts,
+    refreshToken
+  });
   syncOverlayConnection();
 }
 
@@ -1250,11 +1365,17 @@ function getCurrentPort() {
 }
 
 function collectStyle() {
+  const mode = normalizeSubtitleOffsetMode(state.subtitleOffsetMode);
+  const seconds = sanitizeSubtitleOffsetSeconds(state.subtitleOffsetSeconds);
+  state.subtitleOffsetMode = mode;
+  state.subtitleOffsetSeconds = seconds;
   return {
     port: getCurrentPort(),
     background: dom.background?.value || 'transparent',
     maxWidth: parseInt(dom.maxWidth?.value, 10) || 1920,
-    align: dom.align?.value || 'center'
+    align: dom.align?.value || 'center',
+    subtitleOffsetMode: mode,
+    subtitleOffsetSeconds: seconds
   };
 }
 
@@ -1346,3 +1467,4 @@ async function buildFilePayload(file) {
     return null;
   }
 }
+
