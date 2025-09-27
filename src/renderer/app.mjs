@@ -128,6 +128,11 @@ class OverlaySync {
 
 const overlaySync = new OverlaySync(dom.video);
 
+function setVideoPlaceholder(active) {
+  if (!dom.video) return;
+  dom.video.classList.toggle('placeholder', Boolean(active));
+}
+
 function normalizeFontBuffer(font) {
   if (!font || typeof font !== 'object') return null;
   const normalized = {};
@@ -241,6 +246,7 @@ async function syncSubtitleOffset({ mode = null, seconds = null, refresh = false
   setupEventHandlers();
   applyControlVisibility();
   applyPreviewMaximized();
+  setVideoPlaceholder(!dom.video?.currentSrc);
   await loadInitialConfig();
   await loadBinInfo();
   await refreshCachedEntries();
@@ -310,6 +316,71 @@ function setupEventHandlers() {
     syncOverlayConnection();
   }, 120);
 
+  const attachEnterBlur = (el) => {
+    if (!el || el.dataset?.enterBlurAttached) return;
+    el.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === 'NumpadEnter') {
+        ev.preventDefault();
+        el.blur();
+      }
+    });
+    if (el.dataset) el.dataset.enterBlurAttached = 'true';
+  };
+
+  const attachChangeBlur = (el) => {
+    if (!el || el.dataset?.changeBlurAttached) return;
+    let lastValue = el.value;
+    let skipNextClick = false;
+
+    const scheduleBlur = () => {
+      requestAnimationFrame(() => {
+        if (document.activeElement === el) el.blur();
+      });
+    };
+
+    el.addEventListener('focus', () => {
+      lastValue = el.value;
+    });
+
+    el.addEventListener('pointerdown', () => {
+      skipNextClick = true;
+    });
+
+    el.addEventListener('keydown', (ev) => {
+      if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Enter', ' ', 'Spacebar'].includes(ev.key)) {
+        skipNextClick = true;
+      }
+      if (ev.key === 'Escape') {
+        scheduleBlur();
+      }
+    });
+
+    const handleValueCommit = () => {
+      lastValue = el.value;
+      skipNextClick = false;
+      scheduleBlur();
+    };
+
+    el.addEventListener('change', handleValueCommit);
+    el.addEventListener('input', handleValueCommit);
+
+    el.addEventListener('click', () => {
+      if (skipNextClick) {
+        skipNextClick = false;
+        return;
+      }
+      if (el.value === lastValue) {
+        scheduleBlur();
+      }
+    });
+
+    el.addEventListener('blur', () => {
+      skipNextClick = false;
+      lastValue = el.value;
+    });
+
+    if (el.dataset) el.dataset.changeBlurAttached = 'true';
+  };
 
   dom.pickCookies?.addEventListener('click', handlePickCookies);
   dom.clearCookies?.addEventListener('click', handleClearCookies);
@@ -326,6 +397,26 @@ function setupEventHandlers() {
   dom.subsCacheSelect?.addEventListener('change', handleSubsCacheSelectChange);
   dom.videoCacheSearch?.addEventListener('input', handleVideoCacheSearch);
   dom.subsCacheSearch?.addEventListener('input', handleSubsCacheSearch);
+
+  attachEnterBlur(dom.videoCacheSearch);
+  attachEnterBlur(dom.subsCacheSearch);
+  attachEnterBlur(dom.ytUrl);
+
+  document.querySelectorAll('select').forEach(attachChangeBlur);
+  attachChangeBlur(dom.align);
+  attachChangeBlur(dom.background);
+
+  const inputsWithHandlers = new Set([
+    dom.videoCacheSearch,
+    dom.subsCacheSearch,
+    dom.ytUrl,
+    dom.subtitleOffsetSeconds,
+    dom.portInput
+  ].filter(Boolean));
+  document.querySelectorAll('.sidebar input').forEach((input) => {
+    if (inputsWithHandlers.has(input)) return;
+    attachEnterBlur(input);
+  });
 
   dom.toggleAdvanced?.addEventListener('click', () => setSidebarOpen(true));
   dom.closeAdvanced?.addEventListener('click', () => setSidebarOpen(false));
@@ -364,6 +455,13 @@ function setupEventHandlers() {
     persistVolumeSetting(volume);
   });
 
+  dom.video?.addEventListener('loadstart', () => setVideoPlaceholder(true));
+  dom.video?.addEventListener('loadeddata', () => setVideoPlaceholder(false));
+  dom.video?.addEventListener('canplay', () => setVideoPlaceholder(false));
+  dom.video?.addEventListener('loadedmetadata', () => setVideoPlaceholder(false));
+  dom.video?.addEventListener('emptied', () => setVideoPlaceholder(true));
+  dom.video?.addEventListener('error', () => setVideoPlaceholder(true));
+
   // Sync style on change for most controls, but handle `port` specially
   ['background', 'align', 'maxWidth'].forEach((id) => {
     const el = document.getElementById(id);
@@ -372,19 +470,23 @@ function setupEventHandlers() {
     if (el.tagName === 'INPUT') el.addEventListener('input', debouncedSyncStyle);
   });
 
-  // Port should only apply on blur or when the user presses Enter.
+  // Port should apply when the field loses focus or when the user presses Enter.
   const portEl = document.getElementById('port');
   if (portEl) {
-    portEl.addEventListener('blur', async () => {
+    const persistPortChange = async () => {
       const style = collectStyle();
       await persistStyle(style);
       window.api.notifyOverlay({ style });
       syncOverlayConnection();
-    });
-    portEl.addEventListener('keydown', async (ev) => {
-      if (ev.key === 'Enter') {
+    };
+    const runPortSync = () => {
+      void persistPortChange();
+    };
+    portEl.addEventListener('blur', runPortSync);
+    portEl.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === 'NumpadEnter') {
         ev.preventDefault();
-        portEl.blur(); // trigger blur handler which does the actual sync
+        portEl.blur();
       }
     });
   }
@@ -405,15 +507,16 @@ function setupEventHandlers() {
   }
 
   if (dom.subtitleOffsetSeconds) {
+    const persistSubtitleSeconds = () => {
+      void syncSubtitleOffset({ seconds: dom.subtitleOffsetSeconds.value, refresh: true });
+    };
     dom.subtitleOffsetSeconds.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' || ev.key === 'NumpadEnter') {
         ev.preventDefault();
         dom.subtitleOffsetSeconds.blur();
       }
     });
-    dom.subtitleOffsetSeconds.addEventListener('blur', async () => {
-      await syncSubtitleOffset({ seconds: dom.subtitleOffsetSeconds.value, refresh: true });
-    });
+    dom.subtitleOffsetSeconds.addEventListener('blur', persistSubtitleSeconds);
   }
 
   dom.applyToOverlay?.addEventListener('click', async () => {
@@ -1024,11 +1127,17 @@ function handleSubsCacheSelectChange() {
 async function loadVideoEntry(entry) {
   if (!entry || !entry.hasVideo || !entry.videoFilename) {
     releaseObjectUrl();
+    if (dom.video) {
+      dom.video.removeAttribute('src');
+      try { dom.video.load(); } catch { /* noop */ }
+    }
+    setVideoPlaceholder(true);
     setPickedLabel(dom.videoPicked, { label: '', tooltip: '' });
     return;
   }
   releaseObjectUrl();
   const url = buildCacheUrl(entry.videoFilename);
+  setVideoPlaceholder(true);
   dom.video.src = url;
   dom.video.pause();
   try { dom.video.currentTime = 0; } catch { /* noop */ }
@@ -1328,7 +1437,15 @@ async function handleLocalFileSelected(ev) {
 }
 
 function playVideo(url, { autoPlay = false } = {}) {
-  if (!url) return;
+  if (!url) {
+    setVideoPlaceholder(true);
+    if (dom.video) {
+      dom.video.removeAttribute('src');
+      try { dom.video.load(); } catch { /* noop */ }
+    }
+    return;
+  }
+  setVideoPlaceholder(true);
   dom.video.src = url;
   if (autoPlay) {
     dom.video.play().catch(() => { /* ignore autoplay error */ });

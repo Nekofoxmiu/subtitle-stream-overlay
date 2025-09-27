@@ -92,8 +92,8 @@ async function startOverlayServer(port) {
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 820,
+    width: 1250,
+    height: 830,
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
