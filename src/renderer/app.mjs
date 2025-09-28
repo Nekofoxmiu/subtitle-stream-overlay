@@ -32,6 +32,7 @@ const dom = {
   background: $('#background'),
   align: $('#align'),
   maxWidth: $('#maxWidth'),
+  maxHeight: $('#maxHeight'),
   subtitleOffsetToggle: $('#subtitleOffsetToggle'),
   subtitleOffsetSeconds: $('#subtitleOffsetSeconds'),
   applyToOverlay: $('#applyToOverlay'),
@@ -84,6 +85,47 @@ const state = {
   subtitleOffsetOverrides: {},
   overlayRefreshSeq: 0
 };
+
+const ALIGN_OPTIONS = new Set([
+  'top-left',
+  'top-center',
+  'top-right',
+  'middle-left',
+  'middle-center',
+  'middle-right',
+  'bottom-left',
+  'bottom-center',
+  'bottom-right'
+]);
+
+const LEGACY_ALIGN_MAP = {
+  left: 'bottom-left',
+  center: 'bottom-center',
+  right: 'bottom-right',
+  off: 'off',
+  none: 'off',
+  disabled: 'off',
+  default: 'off',
+  centre: 'bottom-center',
+  middle: 'middle-center',
+  top: 'top-center',
+  bottom: 'bottom-center'
+};
+
+function normalizeAlignValue(raw) {
+  if (raw == null) return 'off';
+  const value = String(raw).trim().toLowerCase();
+  if (!value || value === 'off' || value === 'none' || value === 'disabled') return 'off';
+  const mapped = LEGACY_ALIGN_MAP[value] || value;
+  if (mapped === 'off') return 'off';
+  return ALIGN_OPTIONS.has(mapped) ? mapped : 'off';
+}
+
+function normalizeDimension(raw, fallback) {
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
 
 const persistVolumeSetting = debounce((volume) => {
   if (!window?.api?.setConfig) return;
@@ -369,7 +411,10 @@ async function loadInitialConfig() {
   const output = cfg?.output || {};
   if (output.port != null) dom.portInput.value = String(output.port);
   if (output.maxWidth != null) dom.maxWidth.value = String(output.maxWidth);
-  if (output.align) dom.align.value = output.align;
+  if (output.maxHeight != null) dom.maxHeight.value = String(output.maxHeight);
+  if (dom.align) {
+    dom.align.value = normalizeAlignValue(output.align ?? dom.align.value);
+  }
   if (output.background) dom.background.value = output.background;
   const defaultModeRaw = output?.subtitleOffsetDefaults?.mode ?? output.subtitleOffsetMode;
   const defaultSecondsRaw = output?.subtitleOffsetDefaults?.seconds ?? output.subtitleOffsetSeconds;
@@ -576,7 +621,7 @@ function setupEventHandlers() {
   dom.video?.addEventListener('error', () => setVideoPlaceholder(true));
 
   // Sync style on change for most controls, but handle `port` specially
-  ['background', 'align', 'maxWidth'].forEach((id) => {
+  ['background', 'align', 'maxWidth', 'maxHeight'].forEach((id) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener('change', debouncedSyncStyle);
@@ -1619,8 +1664,9 @@ function collectStyle() {
   return {
     port: getCurrentPort(),
     background: dom.background?.value || 'transparent',
-    maxWidth: parseInt(dom.maxWidth?.value, 10) || 1920,
-    align: dom.align?.value || 'center',
+    maxWidth: normalizeDimension(dom.maxWidth?.value, 1920),
+    maxHeight: normalizeDimension(dom.maxHeight?.value, 1080),
+    align: normalizeAlignValue(dom.align?.value),
     subtitleOffsetMode: mode,
     subtitleOffsetSeconds: seconds,
     subtitleOffsetDefaults: defaults,
