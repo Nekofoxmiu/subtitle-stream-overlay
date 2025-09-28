@@ -80,6 +80,8 @@ const state = {
   playerVolume: 1,
   subtitleOffsetMode: 'advance',
   subtitleOffsetSeconds: 0,
+  subtitleOffsetDefaults: { mode: 'advance', seconds: 0 },
+  subtitleOffsetOverrides: {},
   overlayRefreshSeq: 0
 };
 
@@ -209,6 +211,91 @@ function setSubtitleOffsetState({ mode, seconds } = {}) {
   updateSubtitleOffsetUI();
 }
 
+function setSubtitleOffsetControlsEnabled(enabled) {
+  const disabled = !enabled;
+  if (dom.subtitleOffsetToggle) {
+    dom.subtitleOffsetToggle.disabled = disabled;
+    dom.subtitleOffsetToggle.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+  }
+  if (dom.subtitleOffsetSeconds) {
+    dom.subtitleOffsetSeconds.disabled = disabled;
+    dom.subtitleOffsetSeconds.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+  }
+}
+
+function offsetsEqual(a, b) {
+  if (!a || !b) return false;
+  const modeA = normalizeSubtitleOffsetMode(a.mode);
+  const modeB = normalizeSubtitleOffsetMode(b.mode);
+  const secondsA = sanitizeSubtitleOffsetSeconds(a.seconds);
+  const secondsB = sanitizeSubtitleOffsetSeconds(b.seconds);
+  return modeA === modeB && Math.abs(secondsA - secondsB) <= OFFSET_EPSILON;
+}
+
+function makeSubtitleOffsetKey(videoId = state.activeVideoId, subsId = state.activeSubsId) {
+  return [videoId || '', subsId || ''].join('::');
+}
+
+function normalizeSubtitleOffsetOverrides(raw, defaults = state.subtitleOffsetDefaults) {
+  const normalizedDefaults = {
+    mode: normalizeSubtitleOffsetMode(defaults?.mode),
+    seconds: sanitizeSubtitleOffsetSeconds(defaults?.seconds)
+  };
+  const result = {};
+  if (!raw || typeof raw !== 'object') return result;
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof key !== 'string' || !key || key === '::') continue;
+    const normalized = {
+      mode: normalizeSubtitleOffsetMode(value?.mode),
+      seconds: sanitizeSubtitleOffsetSeconds(value?.seconds)
+    };
+    if (offsetsEqual(normalized, normalizedDefaults)) continue;
+    result[key] = normalized;
+  }
+  return result;
+}
+
+function resolveSubtitleOffset({ videoId = state.activeVideoId, subsId = state.activeSubsId } = {}) {
+  const defaults = {
+    mode: normalizeSubtitleOffsetMode(state.subtitleOffsetDefaults?.mode),
+    seconds: sanitizeSubtitleOffsetSeconds(state.subtitleOffsetDefaults?.seconds)
+  };
+  const overrides = state.subtitleOffsetOverrides || {};
+  const candidates = [];
+  const fullKey = makeSubtitleOffsetKey(videoId, subsId);
+  if (fullKey && fullKey !== '::') candidates.push(fullKey);
+  if (videoId) candidates.push([videoId, ''].join('::'));
+  if (subsId) candidates.push(['', subsId].join('::'));
+  const seen = new Set();
+  for (const key of candidates) {
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const override = overrides[key];
+    if (override) {
+      return {
+        mode: normalizeSubtitleOffsetMode(override.mode),
+        seconds: sanitizeSubtitleOffsetSeconds(override.seconds)
+      };
+    }
+  }
+  return defaults;
+}
+
+function applySubtitleOffsetForSelection({ videoId = state.activeVideoId, subsId = state.activeSubsId, notify = true } = {}) {
+  const hasCompleteSelection = Boolean(videoId) && Boolean(subsId);
+  setSubtitleOffsetControlsEnabled(hasCompleteSelection);
+  const prevMode = state.subtitleOffsetMode;
+  const prevSeconds = state.subtitleOffsetSeconds;
+  const resolved = resolveSubtitleOffset({ videoId, subsId });
+  setSubtitleOffsetState(resolved);
+  const modeChanged = resolved.mode !== prevMode;
+  const secondsChanged = Math.abs(resolved.seconds - prevSeconds) > OFFSET_EPSILON;
+  if (notify && (modeChanged || secondsChanged)) {
+    const style = collectStyle();
+    window.api.notifyOverlay({ style });
+  }
+}
+
 async function syncSubtitleOffset({ mode = null, seconds = null, refresh = false } = {}) {
   const nextMode = normalizeSubtitleOffsetMode(mode ?? state.subtitleOffsetMode);
   const rawSeconds = seconds ?? (dom.subtitleOffsetSeconds ? dom.subtitleOffsetSeconds.value : state.subtitleOffsetSeconds);
@@ -228,6 +315,26 @@ async function syncSubtitleOffset({ mode = null, seconds = null, refresh = false
 
   const shouldPersist = modeChanged || secondsChanged;
   const shouldRefresh = refresh || modeChanged || secondsChanged;
+
+  if (shouldPersist) {
+    const key = makeSubtitleOffsetKey();
+    if (!state.subtitleOffsetOverrides || typeof state.subtitleOffsetOverrides !== 'object') {
+      state.subtitleOffsetOverrides = {};
+    }
+    if (!state.subtitleOffsetDefaults || typeof state.subtitleOffsetDefaults !== 'object') {
+      state.subtitleOffsetDefaults = { mode: nextMode, seconds: nextSeconds };
+    }
+    if (key === '::') {
+      state.subtitleOffsetDefaults = { mode: nextMode, seconds: nextSeconds };
+    } else {
+      const override = { mode: nextMode, seconds: nextSeconds };
+      if (offsetsEqual(override, state.subtitleOffsetDefaults)) {
+        delete state.subtitleOffsetOverrides[key];
+      } else {
+        state.subtitleOffsetOverrides[key] = override;
+      }
+    }
+  }
 
   if (!shouldPersist && !shouldRefresh) return;
 
@@ -264,10 +371,15 @@ async function loadInitialConfig() {
   if (output.maxWidth != null) dom.maxWidth.value = String(output.maxWidth);
   if (output.align) dom.align.value = output.align;
   if (output.background) dom.background.value = output.background;
-  setSubtitleOffsetState({
-    mode: output.subtitleOffsetMode,
-    seconds: output.subtitleOffsetSeconds
-  });
+  const defaultModeRaw = output?.subtitleOffsetDefaults?.mode ?? output.subtitleOffsetMode;
+  const defaultSecondsRaw = output?.subtitleOffsetDefaults?.seconds ?? output.subtitleOffsetSeconds;
+  state.subtitleOffsetDefaults = {
+    mode: normalizeSubtitleOffsetMode(defaultModeRaw),
+    seconds: sanitizeSubtitleOffsetSeconds(defaultSecondsRaw)
+  };
+  state.subtitleOffsetOverrides = normalizeSubtitleOffsetOverrides(output?.subtitleOffsetOverrides, state.subtitleOffsetDefaults);
+  setSubtitleOffsetState(state.subtitleOffsetDefaults);
+  setSubtitleOffsetControlsEnabled(Boolean(state.activeVideoId) && Boolean(state.activeSubsId));
   const storedVolume = cfg?.player?.volume;
   const initialVolume = clampVolume(storedVolume != null ? storedVolume : dom.video?.volume ?? 1);
   state.playerVolume = initialVolume;
@@ -301,6 +413,7 @@ async function refreshCachedEntries({ activeVideoId = state.activeVideoId, activ
     updateVideoCacheSelect(state.activeVideoId);
     updateSubsCacheSelect(state.activeSubsId);
     updateActiveCacheInfo({ video: videoEntry || null, subs: subsEntry || null });
+    applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
   } catch (err) {
     console.error('[cache] 無法載入快取清單', err);
   }
@@ -962,6 +1075,7 @@ async function handleDownloadDone(payload) {
       updateSubsCacheSelect(state.activeSubsId);
     }
     updateActiveCacheInfo({ video: activeVideoEntry, subs: activeSubsEntry });
+    applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
   } else {
     refreshCachedEntries().catch((err) => console.error('[cache] 重新整理快取失敗', err));
   }
@@ -1114,6 +1228,7 @@ function handleVideoCacheSelectChange() {
   const entry = getEntryById(id);
   loadVideoEntry(entry);
   updateActiveCacheInfo({ video: entry, subs: getEntryById(state.activeSubsId) });
+  applySubtitleOffsetForSelection({ videoId: id, subsId: state.activeSubsId });
 }
 
 function handleSubsCacheSelectChange() {
@@ -1122,6 +1237,7 @@ function handleSubsCacheSelectChange() {
   const entry = getEntryById(id);
   loadSubtitleEntry(entry);
   updateActiveCacheInfo({ video: getEntryById(state.activeVideoId), subs: entry });
+  applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: id });
 }
 
 async function loadVideoEntry(entry) {
@@ -1200,6 +1316,7 @@ async function handleFetchSubsOnly() {
           label: getSubtitleEntryLabel(firstSubs),
           tooltip: firstSubs.subsPath || ''
         });
+        applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
       } else {
         updateSubsCacheSelect(state.activeSubsId);
       }
@@ -1262,6 +1379,7 @@ async function handlePickSubs() {
       } else {
         updateSubsCacheSelect(state.activeSubsId);
       }
+      applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
       return;
     }
   } catch (err) {
@@ -1413,6 +1531,7 @@ async function handleLocalFileSelected(ev) {
     } else {
       updateVideoCacheSelect(state.activeVideoId);
     }
+    applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
     ev.target.value = '';
     return;
   }
@@ -1433,6 +1552,7 @@ async function handleLocalFileSelected(ev) {
   }
   playVideo(url);
   setPickedLabel(dom.videoPicked, { label: file.name || '', tooltip: filePath || file.name || '' });
+  applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
   ev.target.value = '';
 }
 
@@ -1486,13 +1606,25 @@ function collectStyle() {
   const seconds = sanitizeSubtitleOffsetSeconds(state.subtitleOffsetSeconds);
   state.subtitleOffsetMode = mode;
   state.subtitleOffsetSeconds = seconds;
+
+  const defaults = {
+    mode: normalizeSubtitleOffsetMode(state.subtitleOffsetDefaults?.mode),
+    seconds: sanitizeSubtitleOffsetSeconds(state.subtitleOffsetDefaults?.seconds)
+  };
+  state.subtitleOffsetDefaults = defaults;
+
+  const overrides = normalizeSubtitleOffsetOverrides(state.subtitleOffsetOverrides, defaults);
+  state.subtitleOffsetOverrides = overrides;
+
   return {
     port: getCurrentPort(),
     background: dom.background?.value || 'transparent',
     maxWidth: parseInt(dom.maxWidth?.value, 10) || 1920,
     align: dom.align?.value || 'center',
     subtitleOffsetMode: mode,
-    subtitleOffsetSeconds: seconds
+    subtitleOffsetSeconds: seconds,
+    subtitleOffsetDefaults: defaults,
+    subtitleOffsetOverrides: overrides
   };
 }
 

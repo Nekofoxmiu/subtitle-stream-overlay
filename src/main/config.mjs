@@ -12,7 +12,12 @@ export const store = new Store({
       align: 'center',
       wrapStyle: 2,
       subtitleOffsetMode: 'advance',
-      subtitleOffsetSeconds: 0
+      subtitleOffsetSeconds: 0,
+      subtitleOffsetDefaults: {
+        mode: 'advance',
+        seconds: 0
+      },
+      subtitleOffsetOverrides: {}
     },
     player: {
       volume: 0.8
