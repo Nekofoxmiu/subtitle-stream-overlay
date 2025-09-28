@@ -41,7 +41,7 @@ Subtitle Stream Overlay 是一套以 Electron Forge 建構的字幕疊加工具�
       
    - 亦可匯入本地影片檔或直接使用快取中的檔案於內建播放器預覽。
      
-3. **設定樣式與字型**：在「輸出設定」區域調整背景色、對齊與最大寬度，或匯入字型以還原字幕排版。每次更新都會即時同步至疊加畫面並永久儲存。
+3. **設定樣式與字型**：在「輸出設定」區域調整背景色、對齊與最大寬度，或匯入字型以還原字幕排版。每次更新都會即時同步至疊加畫面並永久儲存。  
     ![image](https://github.com/Nekofoxmiu/subtitle-stream-overlay/blob/main/showcase_pic/showcase_6.png?raw=true)
 4. **開啟疊加畫面**：
    - 預設可於瀏覽器開啟 `http://localhost:59837/overlay`
