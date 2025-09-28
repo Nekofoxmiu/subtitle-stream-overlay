@@ -20,6 +20,7 @@ Subtitle Stream Overlay 是一套以 Electron 建構的字幕疊加工具，內�
 ## 使用流程
 ![image](https://github.com/Nekofoxmiu/subtitle-stream-overlay/blob/main/showcase_pic/showcase_1.png?raw=true)
 ![image](https://github.com/Nekofoxmiu/subtitle-stream-overlay/blob/main/showcase_pic/showcase_2.png?raw=true)
+![image](https://github.com/Nekofoxmiu/subtitle-stream-overlay/blob/main/showcase_pic/showcase_7.png?raw=true)
   
 - 影片所有者：角蓮Caren(@Caren_surfdemon)  
 - 影片來源：[強風オールバック／Yukopi｜cover by 角蓮Caren](https://www.youtube.com/watch?v=OAWxCekrGEI)  
