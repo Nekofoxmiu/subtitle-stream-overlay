@@ -1,9 +1,9 @@
 # Subtitle Stream Overlay
 
-## 簡介
-Subtitle Stream Overlay 是一套以 Electron Forge 建構的字幕疊加工具，結合 SubtitlesOctopus 渲染器與內建 HTTP/WebSocket 伺服器，讓 ASS/SRT 字幕可以直接透過瀏覽器來源套用在 OBS 或錄影軟體上。  
-  
-應用會在啟動時載入使用者設定與字型快取並持續對外提供 overlay 頁面與狀態資料。
+## 教學
+
+[![教學](https://img.youtube.com/vi/cdIYpKmdk1Q/0.jpg)](https://www.youtube.com/watch?v=cdIYpKmdk1Q)  
+點擊圖片跳轉Youtube：https://youtu.be/cdIYpKmdk1Q
 
 ## 功能特色
 - **整合式疊加伺服器**：提供 `/overlay` 頁面、`/state` API 以及字幕/字型資源路徑，可在瀏覽器或串流軟體內直接讀取。
