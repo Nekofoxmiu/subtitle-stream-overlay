@@ -25,6 +25,8 @@ const dom = {
   checkBins: $('#checkBins'),
   pickSubs: $('#pickSubs'),
   pickFonts: $('#pickFonts'),
+  clearFonts: $('#clearFonts'),
+  forceDefaultFontToggle: $('#forceDefaultFontToggle'),
   ytDownload: $('#ytDownload'),
   ytDownloadAudio: $('#ytDownloadAudio'),
   ytCancel: $('#ytCancel'),
@@ -64,6 +66,8 @@ dom.subsCacheSearch = subsCacheControls?.search || null;
 const state = {
   currentAssText: '',
   currentFonts: [],
+  forceDefaultFont: true,
+  defaultFontFamily: 'NotoSans-Regular',
   jobId: null,
   activeDownloadMode: null,
   cachedEntries: [], // { id, title, videoFilename, subsFilename, ... }
@@ -111,6 +115,8 @@ const LEGACY_ALIGN_MAP = {
   top: 'top-center',
   bottom: 'bottom-center'
 };
+
+const BUILTIN_DEFAULT_FONT_FAMILY = 'NotoSans-Regular';
 
 function normalizeAlignValue(raw) {
   if (raw == null) return 'off';
@@ -196,14 +202,46 @@ function describeFontName(font) {
   return '';
 }
 
+function sanitizeFontFamilyName(rawName) {
+  if (typeof rawName !== 'string') return '';
+  const trimmed = rawName.trim();
+  if (!trimmed) return '';
+  const withoutExt = trimmed.replace(/\.[^.]+$/, '');
+  return withoutExt.trim();
+}
+
+function deriveDefaultFontFamily({ fonts = state.currentFonts, forceDefault = state.forceDefaultFont } = {}) {
+  if (!forceDefault) return '';
+  if (Array.isArray(fonts)) {
+    for (const font of fonts) {
+      const label = describeFontName(font) || font?.name || '';
+      const sanitized = sanitizeFontFamilyName(label);
+      if (sanitized) return sanitized;
+    }
+  }
+  return BUILTIN_DEFAULT_FONT_FAMILY;
+}
+
 function updateFontsLabel(fonts = state.currentFonts) {
   if (!dom.fontsPicked) return;
+  const list = Array.isArray(fonts) ? fonts : [];
   const names = [];
-  for (const font of fonts || []) {
+  for (const font of list) {
     const label = describeFontName(font);
     if (label) names.push(label);
   }
-  dom.fontsPicked.textContent = names.join(', ');
+  if (names.length) {
+    dom.fontsPicked.textContent = names.join(', ');
+  } else if (state.forceDefaultFont) {
+    dom.fontsPicked.textContent = `使用內建 ${BUILTIN_DEFAULT_FONT_FAMILY}`;
+  } else {
+    dom.fontsPicked.textContent = '未匯入字型';
+  }
+  if (dom.clearFonts) {
+    const hasFonts = list.length > 0;
+    dom.clearFonts.disabled = !hasFonts;
+    dom.clearFonts.setAttribute('aria-disabled', hasFonts ? 'false' : 'true');
+  }
 }
 
 const OFFSET_EPSILON = 1e-6;
@@ -407,8 +445,16 @@ async function loadInitialConfig() {
   const cfg = await window.api.getConfig();
   const storedFonts = Array.isArray(cfg?.fonts) ? cfg.fonts.map(normalizeFontBuffer).filter(Boolean) : [];
   state.currentFonts = storedFonts;
-  updateFontsLabel(storedFonts);
   const output = cfg?.output || {};
+  state.forceDefaultFont = output?.forceDefaultFont !== false;
+  const storedDefaultFamilyRaw = typeof output?.defaultFontFamily === 'string' ? output.defaultFontFamily.trim() : '';
+  const computedDefaultFamily = deriveDefaultFontFamily({ fonts: storedFonts, forceDefault: state.forceDefaultFont });
+  state.defaultFontFamily = storedDefaultFamilyRaw || computedDefaultFamily;
+  if (dom.forceDefaultFontToggle) {
+    dom.forceDefaultFontToggle.checked = state.forceDefaultFont;
+    dom.forceDefaultFontToggle.setAttribute('aria-checked', state.forceDefaultFont ? 'true' : 'false');
+  }
+  updateFontsLabel(storedFonts);
   if (output.port != null) dom.portInput.value = String(output.port);
   if (output.maxWidth != null) dom.maxWidth.value = String(output.maxWidth);
   if (output.maxHeight != null) dom.maxHeight.value = String(output.maxHeight);
@@ -546,6 +592,7 @@ function setupEventHandlers() {
   dom.pickVideo?.addEventListener('click', handlePickVideo);
   dom.pickSubs?.addEventListener('click', handlePickSubs);
   dom.pickFonts?.addEventListener('click', handlePickFonts);
+  dom.clearFonts?.addEventListener('click', handleClearFonts);
   dom.ytFetch?.addEventListener('click', handleFetchSubsOnly);
   dom.ytDownload?.addEventListener('click', handleDownloadVideo);
   dom.ytDownloadAudio?.addEventListener('click', handleDownloadAudio);
@@ -651,6 +698,16 @@ function setupEventHandlers() {
 
   dom.portInput?.addEventListener('input', () => {
     dom.portView.textContent = dom.portInput.value || '';
+  });
+
+  dom.forceDefaultFontToggle?.addEventListener('change', async () => {
+    state.forceDefaultFont = dom.forceDefaultFontToggle.checked;
+    dom.forceDefaultFontToggle.setAttribute('aria-checked', state.forceDefaultFont ? 'true' : 'false');
+    updateFontsLabel();
+    const style = collectStyle();
+    await persistStyle(style);
+    window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+    dom.forceDefaultFontToggle.blur();
   });
 
   if (dom.subtitleOffsetToggle) {
@@ -1476,6 +1533,19 @@ async function handlePickFonts() {
   window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
 }
 
+async function handleClearFonts() {
+  state.currentFonts = [];
+  updateFontsLabel();
+  try {
+    await persistFonts(state.currentFonts);
+  } catch (err) {
+    console.error('[fonts] 無法儲存字型設定', err);
+  }
+  const style = collectStyle();
+  await persistStyle(style);
+  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+}
+
 /* ---------------- Binaries ---------------- */
 async function handleCheckBins() {
   try {
@@ -1661,6 +1731,11 @@ function collectStyle() {
   const overrides = normalizeSubtitleOffsetOverrides(state.subtitleOffsetOverrides, defaults);
   state.subtitleOffsetOverrides = overrides;
 
+  const forceDefaultFont = state.forceDefaultFont !== false;
+  const defaultFontFamily = deriveDefaultFontFamily({ fonts: state.currentFonts, forceDefault: forceDefaultFont });
+  state.forceDefaultFont = forceDefaultFont;
+  state.defaultFontFamily = defaultFontFamily;
+
   return {
     port: getCurrentPort(),
     background: dom.background?.value || 'transparent',
@@ -1670,7 +1745,9 @@ function collectStyle() {
     subtitleOffsetMode: mode,
     subtitleOffsetSeconds: seconds,
     subtitleOffsetDefaults: defaults,
-    subtitleOffsetOverrides: overrides
+    subtitleOffsetOverrides: overrides,
+    forceDefaultFont,
+    defaultFontFamily
   };
 }
 
