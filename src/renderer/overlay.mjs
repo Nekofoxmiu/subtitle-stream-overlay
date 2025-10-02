@@ -199,6 +199,16 @@ function extractPlayRes(assText) {
   return (x > 0 && y > 0) ? { x, y } : { x: 1920, y: 1080 };
 }
 
+function normalizeRemotePlayRes(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const { x, y } = raw;
+  const parsedX = Number.parseInt(x, 10);
+  const parsedY = Number.parseInt(y, 10);
+  if (!Number.isFinite(parsedX) || parsedX <= 0) return null;
+  if (!Number.isFinite(parsedY) || parsedY <= 0) return null;
+  return { x: parsedX, y: parsedY };
+}
+
 function setBodyBg(mode) {
   document.body.classList.remove('gs-green', 'gs-transparent');
   document.body.classList.add(mode === 'green' ? 'gs-green' : 'gs-transparent');
@@ -431,48 +441,66 @@ ws.onmessage = async (ev) => {
     lastAlignKey = currentStyle.align;
 
     // 2) 決定是否需要重新套用字幕內容或字型
-    const newSub = (payload.subContent || '').trim();
+    const processedSub = typeof payload.subContent === 'string' ? payload.subContent : '';
+    const rawSubFromPayload = typeof payload.rawSubContent === 'string' ? payload.rawSubContent : null;
     const fontsUpdated = Array.isArray(payload.fontBuffers);
     const incomingFontBuffers = fontsUpdated ? payload.fontBuffers : null;
 
-    if (newSub) {
-      lastRawSub = newSub;
+    if (rawSubFromPayload !== null) {
+      lastRawSub = rawSubFromPayload;
+    } else if (typeof payload.subContent === 'string' && !fontsUpdated) {
+      lastRawSub = processedSub;
     }
     if (fontsUpdated) {
       lastFontBuffers = incomingFontBuffers;
     }
 
-    const effectiveRawSub = newSub ? newSub : lastRawSub;
-    const alignedSub = effectiveRawSub ? applyDefaultAlignmentToAss(effectiveRawSub, currentStyle.align) : '';
+    const alignmentApplied = Boolean(payload.assMeta?.alignmentApplied);
     const fontPayload = fontsUpdated ? incomingFontBuffers : lastFontBuffers;
+
+    let alignedSub = '';
+    if (alignmentApplied) {
+      alignedSub = processedSub;
+    } else if (lastRawSub) {
+      alignedSub = applyDefaultAlignmentToAss(lastRawSub, currentStyle.align);
+    }
+
     const hasAlignedSub = Boolean(alignedSub);
     const alignedChanged = hasAlignedSub && alignedSub !== lastSub;
+    const remotePlayRes = normalizeRemotePlayRes(payload.playRes);
+    const shouldApplyStyle = Boolean(remotePlayRes) || hasAlignedSub;
+    if (shouldApplyStyle) {
+      const nextPlayRes = remotePlayRes || extractPlayRes(alignedSub);
+      currentPlayRes = nextPlayRes;
+      const changed = applyStyleAndSize(currentStyle, currentPlayRes);
+      if (changed) onSizePossiblyChanged();
+    }
 
     if (manualClearHold) {
       if (hasAlignedSub) {
         lastSub = alignedSub;
-        currentPlayRes = extractPlayRes(lastSub);
-        const changed = applyStyleAndSize(currentStyle, currentPlayRes);
-        if (changed) onSizePossiblyChanged();
       }
       return;
     }
 
     if (!octopus) {
-      if (hasAlignedSub) await makeOctopus(alignedSub, fontPayload, WORKER_URL);
+      if (hasAlignedSub) {
+        lastSub = alignedSub;
+        await makeOctopus(alignedSub, fontPayload, WORKER_URL);
+      }
       return;
     }
 
     if (fontsUpdated) {
-      if (hasAlignedSub) await makeOctopus(alignedSub, fontPayload, WORKER_URL);
+      if (hasAlignedSub) {
+        lastSub = alignedSub;
+        await makeOctopus(alignedSub, fontPayload, WORKER_URL);
+      }
       return;
     }
 
     if (alignedChanged || (alignChanged && hasAlignedSub)) {
       lastSub = alignedSub;
-      currentPlayRes = extractPlayRes(lastSub);
-      const changed = applyStyleAndSize(currentStyle, currentPlayRes);
-      if (changed) onSizePossiblyChanged();
       try { octopus.setTrack(lastSub); } catch {}
     }
   } else if (type === 'setTime') {

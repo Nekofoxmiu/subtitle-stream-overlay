@@ -2,13 +2,28 @@ import express from 'express';
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
 import path from 'node:path';
+import { processAssForOverlay, DEFAULT_PLAY_RES } from './assUtils.mjs';
 import { store } from './config.mjs';
+
+const WS_READY_STATE_OPEN = 1;
+const EMPTY_ASS_META = Object.freeze({ alignmentApplied: false, styleUpdated: false, overridesRemoved: 0 });
+
+function mergeStyles(currentStyle, patchStyle) {
+  const base = (currentStyle && typeof currentStyle === 'object') ? currentStyle : {};
+  const patch = (patchStyle && typeof patchStyle === 'object') ? patchStyle : {};
+  return { ...base, ...patch };
+}
+
+function clonePlayRes(playRes = DEFAULT_PLAY_RES) {
+  return { x: playRes.x, y: playRes.y };
+}
 
 export class OverlayServer {
   constructor({ rendererDir, assetsDir, userDataPath } = {}) {
     this.rendererDir = rendererDir;
     this.assetsDir = assetsDir;
     this.userDataPath = userDataPath;
+    this.rawSubContent = '';
 
     const persistedFonts = store.get('fonts');
     const fontBuffers = Array.isArray(persistedFonts)
@@ -26,8 +41,11 @@ export class OverlayServer {
 
     this.state = {
       subContent: '',
+      rawSubContent: '',
       fontBuffers,
-      style: store.get('output')
+      style: store.get('output'),
+      playRes: clonePlayRes(),
+      assMeta: EMPTY_ASS_META
     };
     this.app = express();
     this.server = http.createServer(this.app);
@@ -77,16 +95,55 @@ export class OverlayServer {
   broadcast(obj) {
     const s = JSON.stringify(obj);
     for (const client of this.wss.clients) {
-      if (client.readyState === 1) client.send(s);
+      if (client.readyState === WS_READY_STATE_OPEN) client.send(s);
     }
   }
 
-  updateState(patch) {
-    // 合併狀態
-    this.state = { ...this.state, ...patch };
-    // 可選：除錯輸出
-    if (typeof patch?.subContent === 'string')
-      console.log('[overlayServer] subContent len =', patch.subContent.length);
+  updateState(patch = {}) {
+    const prevSubContent = this.state?.subContent;
+    const mergedStyle = mergeStyles(this.state?.style, patch.style);
+    const nextState = {
+      ...this.state,
+      ...patch,
+      style: mergedStyle
+    };
+
+    let rawSub = this.rawSubContent;
+    if (typeof patch.subContent === 'string') {
+      rawSub = patch.subContent;
+    } else if (typeof patch.rawSubContent === 'string') {
+      rawSub = patch.rawSubContent;
+    } else if (typeof nextState.rawSubContent === 'string') {
+      rawSub = nextState.rawSubContent;
+    }
+
+    let processed = '';
+    let playRes = clonePlayRes();
+    let assMeta = EMPTY_ASS_META;
+
+    if (rawSub) {
+      const result = processAssForOverlay({ assText: rawSub, alignKey: mergedStyle?.align });
+      processed = result.text ?? '';
+      playRes = result.playRes ? clonePlayRes(result.playRes) : clonePlayRes();
+      assMeta = {
+        alignmentApplied: Boolean(result.alignmentApplied),
+        styleUpdated: Boolean(result.styleUpdated),
+        overridesRemoved: Number.isFinite(result.overridesRemoved) ? result.overridesRemoved : 0
+      };
+    }
+
+    nextState.rawSubContent = rawSub;
+    nextState.subContent = processed;
+    nextState.playRes = playRes;
+    nextState.assMeta = assMeta;
+
+    this.rawSubContent = rawSub;
+    this.state = nextState;
+
+    if (typeof processed === 'string' && processed !== prevSubContent) {
+      console.log('[overlayServer] subContent len =', processed.length);
+    }
+
     this.broadcast({ type: 'state', payload: this.state });
   }
 
