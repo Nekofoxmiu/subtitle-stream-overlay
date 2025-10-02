@@ -13,7 +13,15 @@ let manualClearHold = false;             // keep canvas blank after manual clear
 let lastFontBuffers = null;
 let fontBlobUrls = [];             // 僅記錄本次建立的 Blob URL，方便釋放
 let currentPlayRes = { x: 1920, y: 1080 };
-let currentStyle   = { maxWidth: 1920, maxHeight: 1080, align: 'off', background: 'transparent', subtitleOffsetSeconds: 0 };
+let currentStyle   = {
+  maxWidth: 1920,
+  maxHeight: 1080,
+  align: 'off',
+  background: 'transparent',
+  subtitleOffsetSeconds: 0,
+  forceDefaultFont: true,
+  defaultFontFamily: 'NotoSans-Regular'
+};
 const TIME_OFFSET_EPSILON = 1e-6;
 let currentTimeOffset = 0;
 let lastBaseTime = 0;
@@ -311,8 +319,11 @@ function makeFontUrls(fontBuffers) {
       urls.push(blobUrl);
     }
   }
-  // 保底：若使用者未提供字型，給一個內建公開字型
-  if (!urls.length) urls.push('/assets/fonts/NotoSans-Regular.woff2');
+  // 保底：若使用者未提供字型且啟用強制覆蓋，給一個內建公開字型
+  const shouldApplyFallback = currentStyle?.forceDefaultFont !== false;
+  if (!urls.length && shouldApplyFallback) {
+    urls.push('/assets/fonts/NotoSans-Regular.woff2');
+  }
   return urls;
 }
 

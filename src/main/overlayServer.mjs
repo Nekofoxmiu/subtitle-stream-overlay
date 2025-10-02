@@ -341,7 +341,14 @@ export class OverlayServer {
     let fontNames = [];
 
     if (rawSub) {
-      const result = processAssForOverlay({ assText: rawSub, alignKey: mergedStyle?.align });
+      const forceDefaultFont = Boolean(mergedStyle?.forceDefaultFont);
+      const defaultFontFamily = forceDefaultFont ? (mergedStyle?.defaultFontFamily || '') : '';
+      const result = processAssForOverlay({
+        assText: rawSub,
+        alignKey: mergedStyle?.align,
+        forceDefaultFont,
+        defaultFontFamily
+      });
       processed = result.text ?? '';
       playRes = result.playRes ? clonePlayRes(result.playRes) : clonePlayRes();
       fontNames = Array.isArray(result.fontNames) ? result.fontNames : [];
