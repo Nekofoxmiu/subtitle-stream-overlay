@@ -3,6 +3,7 @@ import assStringify from 'ass-stringify';
 
 const ALIGN_OVERRIDE_TAG_REGEX = /\\{\\\\an\\d\\}/gi;
 const FONT_OVERRIDE_TAG_REGEX = /\\fn([^\\}]*?)(?=\\|}|$)/gi;
+const FONT_OVERRIDE_COMMAND_REGEX = /\\fn[^\\})]*?(?=[\\})]|$)/gi;
 const STYLE_SECTION_NAMES = new Set(['V4 Styles', 'V4+ Styles']);
 export const DEFAULT_PLAY_RES = Object.freeze({ x: 1920, y: 1080 });
 const ALIGN_KEY_TO_CODE = {
@@ -163,6 +164,7 @@ function rewriteAlignment(ast, alignCode, { forceDefaultFont = false, defaultFon
   }
 
   const shouldApplyAlign = Number.isFinite(alignCode);
+  const shouldStripFontOverrides = Boolean(forceDefaultFont && defaultFontFamily);
 
   for (const section of ast) {
     const sectionName = String(section?.section || '').trim();
@@ -209,7 +211,7 @@ function rewriteAlignment(ast, alignCode, { forceDefaultFont = false, defaultFon
       continue;
     }
 
-    if (!shouldApplyAlign) continue;
+    if (!shouldApplyAlign && !shouldStripFontOverrides) continue;
 
     if (String(sectionName).toLowerCase() === 'events') {
       for (const descriptor of section.body || []) {
@@ -219,13 +221,26 @@ function rewriteAlignment(ast, alignCode, { forceDefaultFont = false, defaultFon
         const styleName = typeof value.Style === 'string' ? value.Style.trim() : '';
         if (styleName && styleName !== 'Default') continue;
         if (typeof value.Text !== 'string') {
-          overridesRemaining = true;
+          if (shouldApplyAlign) overridesRemaining = true;
           continue;
         }
-        const cleaned = value.Text.replace(ALIGN_OVERRIDE_TAG_REGEX, '');
-        if (cleaned !== value.Text) {
-          value.Text = cleaned;
-          overridesRemoved += 1;
+
+        if (shouldApplyAlign) {
+          const cleaned = value.Text.replace(ALIGN_OVERRIDE_TAG_REGEX, '');
+          if (cleaned !== value.Text) {
+            value.Text = cleaned;
+            overridesRemoved += 1;
+          }
+        }
+
+        if (shouldStripFontOverrides && /\\fn/i.test(value.Text)) {
+          const withoutFontOverrides = value.Text.replace(FONT_OVERRIDE_COMMAND_REGEX, '');
+          const normalized = withoutFontOverrides.replace(/\{\s*\}/g, '');
+          if (normalized !== value.Text) {
+            value.Text = normalized;
+            overridesRemoved += 1;
+            defaultFontUpdated = true;
+          }
         }
       }
     }
