@@ -11,11 +11,7 @@ const fontManager = fontManagerModule?.default ?? fontManagerModule;
 const FONT_LOOKUP_AVAILABLE = Boolean(fontManager?.findFontsSync);
 
 const WS_READY_STATE_OPEN = 1;
-const EMPTY_ASS_META = Object.freeze({ alignmentApplied: false, styleUpdated: false, overridesRemoved: 0, defaultFontReplaced: false });
-
-const DEFAULT_FONT_NAME = 'NotoSans-Regular.woff2';
-const DEFAULT_FONT_URL = '/assets/fonts/NotoSans-Regular.woff2';
-const DEFAULT_FONT_FAMILY = 'Noto Sans CJK SC';
+const EMPTY_ASS_META = Object.freeze({ alignmentApplied: false, styleUpdated: false, overridesRemoved: 0 });
 
 const FONT_WEIGHT_PATTERNS = [
   { regex: /\bextra[- ]?(thin|light)\b/gi, weight: 200 },
@@ -39,15 +35,7 @@ const FONT_ITALIC_PATTERNS = [/\bitalic\b/gi, /\boblique\b/gi];
 function mergeStyles(currentStyle, patchStyle) {
   const base = (currentStyle && typeof currentStyle === 'object') ? currentStyle : {};
   const patch = (patchStyle && typeof patchStyle === 'object') ? patchStyle : {};
-  const merged = { ...base, ...patch };
-  const normalizedFamily = typeof merged.defaultFontFamily === 'string' ? merged.defaultFontFamily.trim() : '';
-  merged.defaultFontFamily = normalizedFamily || DEFAULT_FONT_FAMILY;
-  if (typeof patch.forceDefaultFont === 'boolean') {
-    merged.forceDefaultFont = patch.forceDefaultFont;
-  } else if (typeof merged.forceDefaultFont !== 'boolean') {
-    merged.forceDefaultFont = Boolean(merged.forceDefaultFont);
-  }
-  return merged;
+  return { ...base, ...patch };
 }
 
 function clonePlayRes(playRes = DEFAULT_PLAY_RES) {
@@ -64,35 +52,8 @@ function normalizeFontBuffer(font) {
 }
 
 function normalizeFontBufferList(list) {
-  const input = Array.isArray(list) ? list : [];
-  const sanitized = [];
-  for (const font of input) {
-    const normalized = normalizeFontBuffer(font);
-    if (!normalized) continue;
-    if (isDefaultFontEntry(normalized)) continue;
-    sanitized.push(normalized);
-  }
-  return [createDefaultFontEntry(), ...sanitized];
-}
-
-function createDefaultFontEntry() {
-  return { name: DEFAULT_FONT_NAME, url: DEFAULT_FONT_URL };
-}
-
-function isDefaultFontEntry(font) {
-  if (!font || typeof font !== 'object') return false;
-  const url = typeof font.url === 'string' ? font.url : '';
-  const name = typeof font.name === 'string' ? font.name : '';
-  const lowerUrl = url ? url.toLowerCase() : '';
-  const lowerName = name ? name.toLowerCase() : '';
-  if (lowerUrl && lowerUrl.endsWith(DEFAULT_FONT_NAME.toLowerCase())) return true;
-  if (lowerName) {
-    if (lowerName === DEFAULT_FONT_NAME.toLowerCase()) return true;
-    if (lowerName === DEFAULT_FONT_FAMILY.toLowerCase()) return true;
-    const trimmed = lowerName.replace(/\.[^.]+$/, '');
-    if (trimmed === DEFAULT_FONT_NAME.replace(/\.[^.]+$/, '').toLowerCase()) return true;
-  }
-  return false;
+  if (!Array.isArray(list)) return [];
+  return list.map(normalizeFontBuffer).filter(Boolean);
 }
 
 function analyseFontName(name) {
@@ -380,12 +341,7 @@ export class OverlayServer {
     let fontNames = [];
 
     if (rawSub) {
-      const result = processAssForOverlay({
-        assText: rawSub,
-        alignKey: mergedStyle?.align,
-        defaultFontFamily: mergedStyle?.defaultFontFamily || DEFAULT_FONT_FAMILY,
-        forceDefaultFont: mergedStyle?.forceDefaultFont
-      });
+      const result = processAssForOverlay({ assText: rawSub, alignKey: mergedStyle?.align });
       processed = result.text ?? '';
       playRes = result.playRes ? clonePlayRes(result.playRes) : clonePlayRes();
       fontNames = Array.isArray(result.fontNames) ? result.fontNames : [];
@@ -393,8 +349,7 @@ export class OverlayServer {
         alignmentApplied: Boolean(result.alignmentApplied),
         styleUpdated: Boolean(result.styleUpdated),
         overridesRemoved: Number.isFinite(result.overridesRemoved) ? result.overridesRemoved : 0,
-        fontNames,
-        defaultFontReplaced: Boolean(result.defaultFontReplaced)
+        fontNames
       };
     } else {
       this.lastFontKey = '';
