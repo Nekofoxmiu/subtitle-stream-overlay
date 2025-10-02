@@ -244,6 +244,20 @@ function updateFontsLabel(fonts = state.currentFonts) {
   }
 }
 
+function getFontPayloadForOverlay({ includeWhenDisabled = false } = {}) {
+  if (!includeWhenDisabled && state.forceDefaultFont === false) return null;
+  return Array.isArray(state.currentFonts) ? state.currentFonts : [];
+}
+
+function notifyOverlayWithCurrentFonts(patch = {}, options = {}) {
+  const fontPayload = getFontPayloadForOverlay(options);
+  const message = { ...patch };
+  if (fontPayload != null) {
+    message.fontBuffers = fontPayload;
+  }
+  window.api.notifyOverlay(message);
+}
+
 const OFFSET_EPSILON = 1e-6;
 const SUBTITLE_OFFSET_LABELS = {
   advance: '字幕提前',
@@ -478,7 +492,7 @@ async function loadInitialConfig() {
   dom.portView.textContent = dom.portInput.value || '';
   dom.cookiesView.textContent = cfg?.cookiesPath ? cfg.cookiesPath : '(未設定)';
   const style = collectStyle();
-  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+  notifyOverlayWithCurrentFonts({ style }, { includeWhenDisabled: true });
   overlaySync.connect(getCurrentPort());
 }
 
@@ -706,7 +720,7 @@ function setupEventHandlers() {
     updateFontsLabel();
     const style = collectStyle();
     await persistStyle(style);
-    window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+    notifyOverlayWithCurrentFonts({ style });
     dom.forceDefaultFontToggle.blur();
   });
 
@@ -739,10 +753,9 @@ function setupEventHandlers() {
     await persistStyle(style);
     state.overlayRefreshSeq += 1;
     const refreshToken = `${Date.now()}-${state.overlayRefreshSeq}`;
-    window.api.notifyOverlay({
+    notifyOverlayWithCurrentFonts({
       style,
       subContent: state.currentAssText,
-      fontBuffers: state.currentFonts,
       refreshToken
     });
     dom.applyMsg.textContent = `已更新。請以 OBS Browser Source 指向 http://localhost:${style.port}/overlay 或使用REALESE 中的 HTML 檔案。`;
@@ -1507,10 +1520,9 @@ async function loadAssIntoOverlay(assPath) {
   await persistStyle(style);
   state.overlayRefreshSeq += 1;
   const refreshToken = `subs-${Date.now()}-${state.overlayRefreshSeq}`;
-  window.api.notifyOverlay({
+  notifyOverlayWithCurrentFonts({
     style,
     subContent: state.currentAssText,
-    fontBuffers: state.currentFonts,
     refreshToken
   });
   syncOverlayConnection();
@@ -1530,7 +1542,7 @@ async function handlePickFonts() {
   const style = collectStyle();
   await persistFonts(state.currentFonts);
   await persistStyle(style);
-  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+  notifyOverlayWithCurrentFonts({ style }, { includeWhenDisabled: true });
 }
 
 async function handleClearFonts() {
@@ -1543,7 +1555,7 @@ async function handleClearFonts() {
   }
   const style = collectStyle();
   await persistStyle(style);
-  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+  notifyOverlayWithCurrentFonts({ style }, { includeWhenDisabled: true });
 }
 
 /* ---------------- Binaries ---------------- */

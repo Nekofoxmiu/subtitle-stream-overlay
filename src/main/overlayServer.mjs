@@ -190,11 +190,12 @@ export class OverlayServer {
     this.manualFontBuffers = normalizeFontBufferList(persistedFonts);
     this.autoFontBuffers = [];
 
+    const initialStyle = store.get('output');
     this.state = {
       subContent: '',
       rawSubContent: '',
-      fontBuffers: this.combineFontPayloads(this.autoFontBuffers),
-      style: store.get('output'),
+      fontBuffers: this.combineFontPayloads(this.autoFontBuffers, initialStyle),
+      style: initialStyle,
       playRes: clonePlayRes(),
       assMeta: EMPTY_ASS_META
     };
@@ -209,9 +210,10 @@ export class OverlayServer {
     this.setupWs();
   }
 
-  combineFontPayloads(autoFonts = []) {
+  combineFontPayloads(autoFonts = [], style = this.state?.style) {
     const manualFonts = Array.isArray(this.manualFontBuffers) ? this.manualFontBuffers : [];
-    return [...autoFonts, ...manualFonts];
+    const shouldIncludeManual = Boolean(style?.forceDefaultFont);
+    return shouldIncludeManual ? [...autoFonts, ...manualFonts] : [...autoFonts];
   }
 
   readFontAsBase64(fontPath) {
@@ -374,7 +376,7 @@ export class OverlayServer {
     nextState.subContent = processed;
     nextState.playRes = playRes;
     nextState.assMeta = assMeta;
-    nextState.fontBuffers = this.combineFontPayloads(this.autoFontBuffers);
+    nextState.fontBuffers = this.combineFontPayloads(this.autoFontBuffers, mergedStyle);
 
     this.rawSubContent = rawSub;
     this.state = nextState;
