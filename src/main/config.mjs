@@ -12,6 +12,8 @@ export const store = new Store({
       maxHeight: 1080,
       align: 'off',
       wrapStyle: 2,
+      defaultFontFamily: 'Noto Sans CJK SC',
+      forceDefaultFont: false,
       subtitleOffsetMode: 'advance',
       subtitleOffsetSeconds: 0,
       subtitleOffsetDefaults: {
@@ -26,7 +28,9 @@ export const store = new Store({
     // 新增：cookies 路徑（Netscape cookies.txt）
     cookiesPath: '',
     downloads: [],
-    fonts: []
+    fonts: [
+      { name: 'NotoSans-Regular.woff2', url: '/assets/fonts/NotoSans-Regular.woff2' }
+    ]
   }
 });
 

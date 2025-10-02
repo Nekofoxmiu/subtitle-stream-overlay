@@ -25,6 +25,7 @@ const dom = {
   checkBins: $('#checkBins'),
   pickSubs: $('#pickSubs'),
   pickFonts: $('#pickFonts'),
+  clearFonts: $('#clearFonts'),
   ytDownload: $('#ytDownload'),
   ytDownloadAudio: $('#ytDownloadAudio'),
   ytCancel: $('#ytCancel'),
@@ -33,6 +34,7 @@ const dom = {
   align: $('#align'),
   maxWidth: $('#maxWidth'),
   maxHeight: $('#maxHeight'),
+  forceDefaultFont: $('#forceDefaultFont'),
   subtitleOffsetToggle: $('#subtitleOffsetToggle'),
   subtitleOffsetSeconds: $('#subtitleOffsetSeconds'),
   applyToOverlay: $('#applyToOverlay'),
@@ -61,6 +63,10 @@ const subsCacheControls = createCacheSelector(dom.pickSubs?.closest('.row'), {
 dom.subsCacheSelect = subsCacheControls?.select || null;
 dom.subsCacheSearch = subsCacheControls?.search || null;
 
+const DEFAULT_FONT_NAME = 'NotoSans-Regular.woff2';
+const DEFAULT_FONT_URL = '/assets/fonts/NotoSans-Regular.woff2';
+const DEFAULT_FONT_FAMILY = 'Noto Sans CJK SC';
+
 const state = {
   currentAssText: '',
   currentFonts: [],
@@ -83,7 +89,9 @@ const state = {
   subtitleOffsetSeconds: 0,
   subtitleOffsetDefaults: { mode: 'advance', seconds: 0 },
   subtitleOffsetOverrides: {},
-  overlayRefreshSeq: 0
+  overlayRefreshSeq: 0,
+  forceDefaultFont: false,
+  defaultFontFamily: DEFAULT_FONT_FAMILY
 };
 
 const ALIGN_OPTIONS = new Set([
@@ -184,6 +192,43 @@ function normalizeFontBuffer(font) {
   if (typeof font.data === 'string' && font.data) normalized.data = font.data;
   if (typeof font.url === 'string' && font.url) normalized.url = font.url;
   return normalized.data || normalized.url ? normalized : null;
+}
+
+function createDefaultFontEntry() {
+  return { name: DEFAULT_FONT_NAME, url: DEFAULT_FONT_URL };
+}
+
+function isDefaultFontEntry(font) {
+  if (!font || typeof font !== 'object') return false;
+  const url = typeof font.url === 'string' ? font.url : '';
+  const name = typeof font.name === 'string' ? font.name : '';
+  const lowerName = name ? name.toLowerCase() : '';
+  const lowerUrl = url ? url.toLowerCase() : '';
+  if (lowerUrl && lowerUrl.endsWith(DEFAULT_FONT_NAME.toLowerCase())) return true;
+  if (lowerName) {
+    if (lowerName === DEFAULT_FONT_NAME.toLowerCase()) return true;
+    if (lowerName === DEFAULT_FONT_FAMILY.toLowerCase()) return true;
+    const trimmed = lowerName.replace(/\.[^.]+$/, '');
+    if (trimmed === DEFAULT_FONT_NAME.replace(/\.[^.]+$/, '').toLowerCase()) return true;
+  }
+  return false;
+}
+
+function ensureDefaultFont(fonts = []) {
+  const list = Array.isArray(fonts) ? fonts : [];
+  const sanitized = [];
+  for (const font of list) {
+    const normalized = normalizeFontBuffer(font);
+    if (!normalized) continue;
+    if (isDefaultFontEntry(normalized)) continue;
+    sanitized.push(normalized);
+  }
+  return [createDefaultFontEntry(), ...sanitized];
+}
+
+function setCurrentFonts(fonts) {
+  state.currentFonts = ensureDefaultFont(fonts);
+  updateFontsLabel();
 }
 
 function describeFontName(font) {
@@ -405,10 +450,13 @@ async function syncSubtitleOffset({ mode = null, seconds = null, refresh = false
 
 async function loadInitialConfig() {
   const cfg = await window.api.getConfig();
-  const storedFonts = Array.isArray(cfg?.fonts) ? cfg.fonts.map(normalizeFontBuffer).filter(Boolean) : [];
-  state.currentFonts = storedFonts;
-  updateFontsLabel(storedFonts);
+  const storedFonts = Array.isArray(cfg?.fonts) ? cfg.fonts : [];
+  setCurrentFonts(storedFonts);
   const output = cfg?.output || {};
+  const defaultFontFamilyRaw = typeof output?.defaultFontFamily === 'string' ? output.defaultFontFamily.trim() : '';
+  state.defaultFontFamily = defaultFontFamilyRaw || DEFAULT_FONT_FAMILY;
+  state.forceDefaultFont = Boolean(output?.forceDefaultFont);
+  if (dom.forceDefaultFont) dom.forceDefaultFont.checked = state.forceDefaultFont;
   if (output.port != null) dom.portInput.value = String(output.port);
   if (output.maxWidth != null) dom.maxWidth.value = String(output.maxWidth);
   if (output.maxHeight != null) dom.maxHeight.value = String(output.maxHeight);
@@ -546,6 +594,8 @@ function setupEventHandlers() {
   dom.pickVideo?.addEventListener('click', handlePickVideo);
   dom.pickSubs?.addEventListener('click', handlePickSubs);
   dom.pickFonts?.addEventListener('click', handlePickFonts);
+  dom.clearFonts?.addEventListener('click', handleClearFonts);
+  dom.forceDefaultFont?.addEventListener('change', handleForceDefaultFontChange);
   dom.ytFetch?.addEventListener('click', handleFetchSubsOnly);
   dom.ytDownload?.addEventListener('click', handleDownloadVideo);
   dom.ytDownloadAudio?.addEventListener('click', handleDownloadAudio);
@@ -1463,15 +1513,29 @@ async function loadAssIntoOverlay(assPath) {
 async function handlePickFonts() {
   const files = await window.api.openFiles({ filters: [{ name: 'Fonts', extensions: ['ttf', 'otf', 'woff2', 'woff'] }] });
   if (!files.length) return;
-  state.currentFonts = [];
+  const pickedFonts = [];
   for (const filePath of files) {
     const base64 = await window.api.readBinaryBase64(filePath);
     const name = filePath.split(/[\\/]/).pop();
-    state.currentFonts.push({ name, data: base64 });
+    pickedFonts.push({ name, data: base64 });
   }
-  updateFontsLabel();
+  setCurrentFonts(pickedFonts);
   const style = collectStyle();
   await persistFonts(state.currentFonts);
+  await persistStyle(style);
+  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+}
+
+async function handleClearFonts() {
+  setCurrentFonts([]);
+  const style = collectStyle();
+  await persistFonts(state.currentFonts);
+  await persistStyle(style);
+  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+}
+
+async function handleForceDefaultFontChange() {
+  const style = collectStyle();
   await persistStyle(style);
   window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
 }
@@ -1652,6 +1716,12 @@ function collectStyle() {
   state.subtitleOffsetMode = mode;
   state.subtitleOffsetSeconds = seconds;
 
+  const forceDefaultFont = Boolean(dom.forceDefaultFont?.checked);
+  state.forceDefaultFont = forceDefaultFont;
+  const normalizedFamily = typeof state.defaultFontFamily === 'string' ? state.defaultFontFamily.trim() : '';
+  const defaultFontFamily = normalizedFamily || DEFAULT_FONT_FAMILY;
+  state.defaultFontFamily = defaultFontFamily;
+
   const defaults = {
     mode: normalizeSubtitleOffsetMode(state.subtitleOffsetDefaults?.mode),
     seconds: sanitizeSubtitleOffsetSeconds(state.subtitleOffsetDefaults?.seconds)
@@ -1667,6 +1737,8 @@ function collectStyle() {
     maxWidth: normalizeDimension(dom.maxWidth?.value, 1920),
     maxHeight: normalizeDimension(dom.maxHeight?.value, 1080),
     align: normalizeAlignValue(dom.align?.value),
+    defaultFontFamily,
+    forceDefaultFont,
     subtitleOffsetMode: mode,
     subtitleOffsetSeconds: seconds,
     subtitleOffsetDefaults: defaults,
