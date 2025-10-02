@@ -2,6 +2,7 @@ import assParser from 'ass-parser';
 import assStringify from 'ass-stringify';
 
 const ALIGN_OVERRIDE_TAG_REGEX = /\\{\\\\an\\d\\}/gi;
+const FONT_OVERRIDE_TAG_REGEX = /\\fn([^\\}]*?)(?=\\|}|$)/gi;
 const STYLE_SECTION_NAMES = new Set(['V4 Styles', 'V4+ Styles']);
 export const DEFAULT_PLAY_RES = Object.freeze({ x: 1920, y: 1080 });
 const ALIGN_KEY_TO_CODE = {
@@ -15,6 +16,83 @@ const ALIGN_KEY_TO_CODE = {
   'top-center': 8,
   'top-right': 9
 };
+
+function createFontCollector() {
+  const fonts = new Map();
+  return {
+    add(value) {
+      if (typeof value !== 'string') return;
+      let normalized = value.replace(/\u0000/g, '').trim();
+      if (!normalized) return;
+      if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+          (normalized.startsWith('\'') && normalized.endsWith('\''))) {
+        normalized = normalized.slice(1, -1).trim();
+      }
+      const key = normalized.toLowerCase();
+      if (!key || fonts.has(key)) return;
+      fonts.set(key, normalized);
+    },
+    toArray() {
+      return Array.from(fonts.values());
+    }
+  };
+}
+
+function collectFontsFromOverrides(collector, text) {
+  if (typeof text !== 'string' || !text) return;
+  FONT_OVERRIDE_TAG_REGEX.lastIndex = 0;
+  let match;
+  while ((match = FONT_OVERRIDE_TAG_REGEX.exec(text))) {
+    if (match[1] != null) collector.add(match[1]);
+  }
+}
+
+function collectFontsFromStyles(collector, ast) {
+  if (!Array.isArray(ast)) return;
+  for (const section of ast) {
+    const sectionName = String(section?.section || '').trim();
+    if (!STYLE_SECTION_NAMES.has(sectionName)) continue;
+    for (const descriptor of section.body || []) {
+      if (descriptor?.key !== 'Style') continue;
+      const value = descriptor.value;
+      if (!value || typeof value !== 'object') continue;
+      const fontName = value.Fontname ?? value.FontName ?? value.fontname ?? value.fontName ?? null;
+      if (typeof fontName === 'string') collector.add(fontName);
+    }
+  }
+}
+
+function collectFontsFromEvents(collector, ast) {
+  if (!Array.isArray(ast)) return;
+  for (const section of ast) {
+    const sectionName = String(section?.section || '').trim().toLowerCase();
+    if (sectionName !== 'events') continue;
+    for (const descriptor of section.body || []) {
+      if (!descriptor || (descriptor.key !== 'Dialogue' && descriptor.key !== 'Comment')) continue;
+      const dialog = descriptor.value;
+      if (!dialog || typeof dialog !== 'object') continue;
+      collectFontsFromOverrides(collector, dialog.Text);
+    }
+  }
+}
+
+function collectFontsFromRawStyles(collector, text = '') {
+  if (!text) return;
+  const styleLineRegex = /^\s*Style\s*:\s*[^,]*,\s*([^,]+)/gim;
+  let match;
+  while ((match = styleLineRegex.exec(text))) {
+    collector.add(match[1]);
+  }
+}
+
+function extractFontNames(ast, text = '') {
+  const collector = createFontCollector();
+  collectFontsFromStyles(collector, ast);
+  collectFontsFromEvents(collector, ast);
+  collectFontsFromRawStyles(collector, text);
+  collectFontsFromOverrides(collector, text);
+  return collector.toArray();
+}
 
 function clonePlayRes(value = DEFAULT_PLAY_RES) {
   return { x: value.x, y: value.y };
@@ -72,16 +150,19 @@ function applyOriginalNewlines(originalText, nextText) {
   return normalized.replace(/\n/g, '\r\n');
 }
 
-function rewriteAlignment(ast, alignCode) {
+function rewriteAlignment(ast, alignCode, { forceDefaultFont = false, defaultFontFamily = '' } = {}) {
   let styleUpdated = false;
   let defaultStyleSeen = false;
   let defaultStyleAlignMatches = false;
   let overridesRemoved = 0;
   let overridesRemaining = false;
+  let defaultFontUpdated = false;
 
   if (!Array.isArray(ast)) {
-    return { styleUpdated, overridesRemoved, alignmentSatisfied: false };
+    return { styleUpdated, overridesRemoved, alignmentSatisfied: false, defaultFontUpdated: false };
   }
+
+  const shouldApplyAlign = Number.isFinite(alignCode);
 
   for (const section of ast) {
     const sectionName = String(section?.section || '').trim();
@@ -94,17 +175,41 @@ function rewriteAlignment(ast, alignCode) {
         const styleName = typeof styleNameRaw === 'string' ? styleNameRaw.trim() : '';
         if (styleName !== 'Default') continue;
         defaultStyleSeen = true;
-        const currentAlign = Number.parseInt(String(styleValue.Alignment ?? styleValue.alignment ?? '').trim(), 10);
-        if (!Number.isFinite(currentAlign) || currentAlign !== alignCode) {
-          styleValue.Alignment = String(alignCode);
-          styleUpdated = true;
-          defaultStyleAlignMatches = true;
-        } else {
-          defaultStyleAlignMatches = true;
+
+        if (shouldApplyAlign) {
+          const rawAlign = String(styleValue.Alignment ?? styleValue.alignment ?? '').trim();
+          const currentAlign = Number.parseInt(rawAlign, 10);
+          if (!Number.isFinite(currentAlign) || currentAlign !== alignCode) {
+            styleValue.Alignment = String(alignCode);
+            styleUpdated = true;
+            defaultStyleAlignMatches = true;
+          } else {
+            defaultStyleAlignMatches = true;
+          }
+        }
+
+        if (forceDefaultFont && defaultFontFamily) {
+          const currentFont = String(
+            styleValue.Fontname ??
+            styleValue.FontName ??
+            styleValue.fontname ??
+            styleValue.fontName ??
+            ''
+          ).trim();
+          if (currentFont !== defaultFontFamily) {
+            styleValue.Fontname = defaultFontFamily;
+            styleValue.FontName = defaultFontFamily;
+            styleValue.fontname = defaultFontFamily;
+            styleValue.fontName = defaultFontFamily;
+            styleUpdated = true;
+            defaultFontUpdated = true;
+          }
         }
       }
       continue;
     }
+
+    if (!shouldApplyAlign) continue;
 
     if (String(sectionName).toLowerCase() === 'events') {
       for (const descriptor of section.body || []) {
@@ -126,57 +231,76 @@ function rewriteAlignment(ast, alignCode) {
     }
   }
 
-  const alignmentSatisfied = defaultStyleSeen && defaultStyleAlignMatches && !overridesRemaining;
-  return { styleUpdated, overridesRemoved, alignmentSatisfied };
+  const alignmentSatisfied = shouldApplyAlign
+    ? (defaultStyleSeen && defaultStyleAlignMatches && !overridesRemaining)
+    : false;
+
+  return { styleUpdated, overridesRemoved, alignmentSatisfied, defaultFontUpdated };
 }
 
-export function processAssForOverlay({ assText = '', alignKey = 'off' } = {}) {
+export function processAssForOverlay({ assText = '', alignKey = 'off', defaultFontFamily = '', forceDefaultFont = false } = {}) {
   if (!assText) {
     return {
       text: '',
       playRes: clonePlayRes(),
       alignmentApplied: false,
       styleUpdated: false,
-      overridesRemoved: 0
+      overridesRemoved: 0,
+      fontNames: [],
+      defaultFontReplaced: false
     };
   }
 
   const normalizedKey = typeof alignKey === 'string' ? alignKey.trim().toLowerCase() : 'off';
   const alignCode = ALIGN_KEY_TO_CODE[normalizedKey] ?? null;
+  const normalizedFontFamily = typeof defaultFontFamily === 'string' ? defaultFontFamily.trim() : '';
+  const shouldForceFont = Boolean(forceDefaultFont && normalizedFontFamily);
 
   const ast = parseAssSafe(assText);
+  const fontNames = extractFontNames(ast, assText);
   if (!ast) {
     return {
       text: assText,
       playRes: extractPlayResFallback(assText),
       alignmentApplied: false,
       styleUpdated: false,
-      overridesRemoved: 0
+      overridesRemoved: 0,
+      fontNames,
+      defaultFontReplaced: false
     };
   }
 
   const playRes = extractPlayResFromAst(ast);
 
-  if (alignCode == null) {
+  if (alignCode == null && !shouldForceFont) {
     return {
       text: assText,
       playRes,
       alignmentApplied: false,
       styleUpdated: false,
-      overridesRemoved: 0
+      overridesRemoved: 0,
+      fontNames,
+      defaultFontReplaced: false
     };
   }
 
-  const { styleUpdated, overridesRemoved, alignmentSatisfied } = rewriteAlignment(ast, alignCode);
+  const { styleUpdated, overridesRemoved, alignmentSatisfied, defaultFontUpdated } = rewriteAlignment(
+    ast,
+    alignCode,
+    { forceDefaultFont: shouldForceFont, defaultFontFamily: normalizedFontFamily }
+  );
   const alignmentApplied = styleUpdated || overridesRemoved > 0 || alignmentSatisfied;
+  const defaultFontReplaced = Boolean(defaultFontUpdated);
 
-  if (!styleUpdated && overridesRemoved === 0) {
+  if (!styleUpdated && !defaultFontReplaced && overridesRemoved === 0) {
     return {
       text: assText,
       playRes,
       alignmentApplied,
       styleUpdated,
-      overridesRemoved
+      overridesRemoved,
+      fontNames,
+      defaultFontReplaced
     };
   }
 
@@ -188,6 +312,8 @@ export function processAssForOverlay({ assText = '', alignKey = 'off' } = {}) {
     playRes,
     alignmentApplied,
     styleUpdated,
-    overridesRemoved
+    overridesRemoved,
+    fontNames,
+    defaultFontReplaced
   };
 }
