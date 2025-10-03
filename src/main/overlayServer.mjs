@@ -2,11 +2,35 @@ import express from 'express';
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
 import path from 'node:path';
+import fs from 'node:fs';
+import fontManagerModule from 'font-scanner';
 import { processAssForOverlay, DEFAULT_PLAY_RES } from './assUtils.mjs';
 import { store } from './config.mjs';
 
+const fontManager = fontManagerModule?.default ?? fontManagerModule;
+const FONT_LOOKUP_AVAILABLE = Boolean(fontManager?.findFontsSync);
+
 const WS_READY_STATE_OPEN = 1;
 const EMPTY_ASS_META = Object.freeze({ alignmentApplied: false, styleUpdated: false, overridesRemoved: 0 });
+
+const FONT_WEIGHT_PATTERNS = [
+  { regex: /\bextra[- ]?(thin|light)\b/gi, weight: 200 },
+  { regex: /\bultra[- ]?(thin|light)\b/gi, weight: 200 },
+  { regex: /\bthin\b/gi, weight: 100 },
+  { regex: /\blight\b/gi, weight: 300 },
+  { regex: /\bregular\b/gi, weight: 400 },
+  { regex: /\bbook\b/gi, weight: 400 },
+  { regex: /\bnormal\b/gi, weight: 400 },
+  { regex: /\bmedium\b/gi, weight: 500 },
+  { regex: /\bsemi[- ]?bold\b/gi, weight: 600 },
+  { regex: /\bdemi[- ]?bold\b/gi, weight: 600 },
+  { regex: /\bbold\b/gi, weight: 700 },
+  { regex: /\bextra[- ]?bold\b/gi, weight: 800 },
+  { regex: /\bultra[- ]?bold\b/gi, weight: 800 },
+  { regex: /\bheavy\b/gi, weight: 900 },
+  { regex: /\bblack\b/gi, weight: 900 }
+];
+const FONT_ITALIC_PATTERNS = [/\bitalic\b/gi, /\boblique\b/gi];
 
 function mergeStyles(currentStyle, patchStyle) {
   const base = (currentStyle && typeof currentStyle === 'object') ? currentStyle : {};
@@ -18,6 +42,134 @@ function clonePlayRes(playRes = DEFAULT_PLAY_RES) {
   return { x: playRes.x, y: playRes.y };
 }
 
+function normalizeFontBuffer(font) {
+  if (!font || typeof font !== 'object') return null;
+  const normalized = {};
+  if (typeof font.name === 'string' && font.name) normalized.name = font.name;
+  if (typeof font.data === 'string' && font.data) normalized.data = font.data;
+  if (typeof font.url === 'string' && font.url) normalized.url = font.url;
+  return (normalized.data || normalized.url) ? normalized : null;
+}
+
+function normalizeFontBufferList(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map(normalizeFontBuffer).filter(Boolean);
+}
+
+function analyseFontName(name) {
+  if (typeof name !== 'string') {
+    return { original: '', baseFamily: '', weight: null, italic: null };
+  }
+  const original = name.trim();
+  if (!original) {
+    return { original: '', baseFamily: '', weight: null, italic: null };
+  }
+  let working = original.replace(/^@+/, '');
+  let italic = null;
+  for (const pattern of FONT_ITALIC_PATTERNS) {
+    if (pattern.test(working)) {
+      italic = true;
+      working = working.replace(pattern, ' ');
+    }
+  }
+  let weight = null;
+  for (const { regex, weight: value } of FONT_WEIGHT_PATTERNS) {
+    if (regex.test(working)) {
+      if (weight == null) weight = value;
+      working = working.replace(regex, ' ');
+    }
+  }
+  const baseFamily = working.replace(/\s+/g, ' ').trim();
+  return {
+    original,
+    baseFamily: baseFamily || original,
+    weight,
+    italic: italic === true ? true : null
+  };
+}
+
+function buildFontQueries(meta) {
+  const queries = [];
+  const families = [];
+  if (meta.original) families.push(meta.original);
+  if (meta.baseFamily && meta.baseFamily.toLowerCase() !== meta.original.toLowerCase()) {
+    families.push(meta.baseFamily);
+  }
+  if (meta.baseFamily && !families.includes(meta.baseFamily)) {
+    families.push(meta.baseFamily);
+  }
+  const seen = new Set();
+  for (const family of families) {
+    const trimmed = family.replace(/\s+/g, ' ').trim();
+    if (!trimmed) continue;
+    const specificQuery = {};
+    specificQuery.family = trimmed;
+    if (typeof meta.weight === 'number') specificQuery.weight = meta.weight;
+    if (typeof meta.italic === 'boolean') specificQuery.italic = meta.italic;
+    const generalQuery = { family: trimmed };
+    for (const query of [specificQuery, generalQuery]) {
+      const sanitized = {};
+      if (query.family) sanitized.family = query.family;
+      if (typeof query.weight === 'number') sanitized.weight = query.weight;
+      if (typeof query.italic === 'boolean') sanitized.italic = query.italic;
+      const key = JSON.stringify(sanitized);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      queries.push(sanitized);
+    }
+  }
+  return queries;
+}
+
+function pickBestFontMatch(matches, meta) {
+  if (!Array.isArray(matches) || !matches.length) return null;
+  const targetFamily = meta.baseFamily?.toLowerCase() || '';
+  const desiredWeight = typeof meta.weight === 'number' ? meta.weight : null;
+  const wantsItalic = meta.italic === true;
+  let best = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const font of matches) {
+    if (!font || !font.path) continue;
+    let score = 0;
+    if (targetFamily) {
+      const fontFamily = (font.family || '').toLowerCase();
+      if (fontFamily !== targetFamily) score += 5;
+    }
+    if (wantsItalic) {
+      score += font.italic ? 0 : 2;
+    }
+    if (desiredWeight != null) {
+      const weightDiff = Math.abs((font.weight ?? 400) - desiredWeight);
+      score += weightDiff / 100;
+    }
+    if (score < bestScore) {
+      bestScore = score;
+      best = font;
+    }
+  }
+  return best || matches[0] || null;
+}
+
+function findSystemFont(fontName) {
+  if (!FONT_LOOKUP_AVAILABLE) return null;
+  const meta = analyseFontName(fontName);
+  const queries = buildFontQueries(meta);
+  for (const query of queries) {
+    let matches = [];
+    try {
+      matches = fontManager.findFontsSync(query);
+      console.log('[overlayServer] font-scanner query', query, '=>', matches.length, 'matches');
+    } catch (err) {
+      console.warn('[overlayServer] font-scanner query failed', query, err);
+      continue;
+    }
+    if (!Array.isArray(matches) || matches.length === 0) continue;
+    const best = pickBestFontMatch(matches, meta);
+    if (best) return { font: best, meta };
+  }
+  return null;
+}
+
 export class OverlayServer {
   constructor({ rendererDir, assetsDir, userDataPath } = {}) {
     this.rendererDir = rendererDir;
@@ -25,25 +177,25 @@ export class OverlayServer {
     this.userDataPath = userDataPath;
     this.rawSubContent = '';
 
-    const persistedFonts = store.get('fonts');
-    const fontBuffers = Array.isArray(persistedFonts)
-      ? persistedFonts
-          .filter((font) => font && typeof font === 'object')
-          .map((font) => {
-            const normalized = {};
-            if (typeof font.name === 'string' && font.name) normalized.name = font.name;
-            if (typeof font.data === 'string' && font.data) normalized.data = font.data;
-            if (typeof font.url === 'string' && font.url) normalized.url = font.url;
-            return normalized;
-          })
-          .filter((font) => font.data || font.url)
-      : [];
+    this.fontLookupEnabled = FONT_LOOKUP_AVAILABLE;
+    if (!this.fontLookupEnabled) {
+      console.warn('[overlayServer] font-scanner unavailable; system font auto-loading disabled');
+    }
 
+    this.fontCache = new Map();
+    this.lastFontKey = '';
+    this.missingFonts = new Set();
+
+    const persistedFonts = store.get('fonts');
+    this.manualFontBuffers = normalizeFontBufferList(persistedFonts);
+    this.autoFontBuffers = [];
+
+    const initialStyle = store.get('output');
     this.state = {
       subContent: '',
       rawSubContent: '',
-      fontBuffers,
-      style: store.get('output'),
+      fontBuffers: this.combineFontPayloads(this.autoFontBuffers, initialStyle),
+      style: initialStyle,
       playRes: clonePlayRes(),
       assMeta: EMPTY_ASS_META
     };
@@ -56,6 +208,67 @@ export class OverlayServer {
     this.wss = new WebSocketServer({ server: this.server });
     this.setupRoutes();
     this.setupWs();
+  }
+
+  combineFontPayloads(autoFonts = [], style = this.state?.style) {
+    const manualFonts = Array.isArray(this.manualFontBuffers) ? this.manualFontBuffers : [];
+    const shouldIncludeManual = Boolean(style?.forceDefaultFont);
+    return shouldIncludeManual ? [...autoFonts, ...manualFonts] : [...autoFonts];
+  }
+
+  readFontAsBase64(fontPath) {
+    if (!fontPath) return null;
+    const normalizedPath = path.normalize(fontPath);
+    if (this.fontCache.has(normalizedPath)) return this.fontCache.get(normalizedPath);
+    try {
+      const data = fs.readFileSync(normalizedPath);
+      const base64 = data.toString('base64');
+      this.fontCache.set(normalizedPath, base64);
+      return base64;
+    } catch (err) {
+      console.warn('[overlayServer] failed to read font file', normalizedPath, err);
+      this.fontCache.set(normalizedPath, null);
+      return null;
+    }
+  }
+
+  loadSystemFonts(fontNames = []) {
+    if (!this.fontLookupEnabled) return [];
+    const normalizedNames = Array.isArray(fontNames)
+      ? fontNames.map((name) => typeof name === 'string' ? name.trim() : '').filter(Boolean)
+      : [];
+    if (!normalizedNames.length) {
+      this.lastFontKey = '';
+      return [];
+    }
+    const key = normalizedNames.map((name) => name.toLowerCase()).join('||');
+    if (this.lastFontKey === key && this.autoFontBuffers.length) {
+      return this.autoFontBuffers;
+    }
+    this.lastFontKey = key;
+
+    const autoFonts = [];
+    const seenPaths = new Set();
+    for (const name of normalizedNames) {
+      const match = findSystemFont(name);
+      if (!match || !match.font || !match.font.path) {
+        const lower = name.toLowerCase();
+        if (!this.missingFonts.has(lower)) {
+          console.warn(`[overlayServer] system font not found: ${name}`);
+          this.missingFonts.add(lower);
+        }
+        continue;
+      }
+      this.missingFonts.delete(name.toLowerCase());
+      const resolvedPath = path.normalize(match.font.path);
+      if (seenPaths.has(resolvedPath)) continue;
+      const data = this.readFontAsBase64(resolvedPath);
+      if (!data) continue;
+      seenPaths.add(resolvedPath);
+      autoFonts.push({ name, data });
+    }
+
+    return autoFonts;
   }
 
   setupRoutes() {
@@ -101,18 +314,25 @@ export class OverlayServer {
 
   updateState(patch = {}) {
     const prevSubContent = this.state?.subContent;
-    const mergedStyle = mergeStyles(this.state?.style, patch.style);
+
+    const sanitizedPatch = { ...patch };
+    if (Array.isArray(sanitizedPatch.fontBuffers)) {
+      this.manualFontBuffers = normalizeFontBufferList(sanitizedPatch.fontBuffers);
+    }
+    delete sanitizedPatch.fontBuffers;
+
+    const mergedStyle = mergeStyles(this.state?.style, sanitizedPatch.style);
     const nextState = {
       ...this.state,
-      ...patch,
+      ...sanitizedPatch,
       style: mergedStyle
     };
 
     let rawSub = this.rawSubContent;
-    if (typeof patch.subContent === 'string') {
-      rawSub = patch.subContent;
-    } else if (typeof patch.rawSubContent === 'string') {
-      rawSub = patch.rawSubContent;
+    if (typeof sanitizedPatch.subContent === 'string') {
+      rawSub = sanitizedPatch.subContent;
+    } else if (typeof sanitizedPatch.rawSubContent === 'string') {
+      rawSub = sanitizedPatch.rawSubContent;
     } else if (typeof nextState.rawSubContent === 'string') {
       rawSub = nextState.rawSubContent;
     }
@@ -120,22 +340,43 @@ export class OverlayServer {
     let processed = '';
     let playRes = clonePlayRes();
     let assMeta = EMPTY_ASS_META;
+    let fontNames = [];
 
     if (rawSub) {
-      const result = processAssForOverlay({ assText: rawSub, alignKey: mergedStyle?.align });
+      const forceDefaultFont = Boolean(mergedStyle?.forceDefaultFont);
+      const defaultFontFamily = forceDefaultFont ? (mergedStyle?.defaultFontFamily || '') : '';
+      const result = processAssForOverlay({
+        assText: rawSub,
+        alignKey: mergedStyle?.align,
+        forceDefaultFont,
+        defaultFontFamily
+      });
       processed = result.text ?? '';
       playRes = result.playRes ? clonePlayRes(result.playRes) : clonePlayRes();
+      fontNames = Array.isArray(result.fontNames) ? result.fontNames : [];
       assMeta = {
         alignmentApplied: Boolean(result.alignmentApplied),
         styleUpdated: Boolean(result.styleUpdated),
-        overridesRemoved: Number.isFinite(result.overridesRemoved) ? result.overridesRemoved : 0
+        overridesRemoved: Number.isFinite(result.overridesRemoved) ? result.overridesRemoved : 0,
+        fontNames
       };
+    } else {
+      this.lastFontKey = '';
+      this.autoFontBuffers = [];
+    }
+
+    if (fontNames.length && this.fontLookupEnabled) {
+      const autoFonts = this.loadSystemFonts(fontNames);
+      this.autoFontBuffers = autoFonts;
+    } else {
+      this.autoFontBuffers = [];
     }
 
     nextState.rawSubContent = rawSub;
     nextState.subContent = processed;
     nextState.playRes = playRes;
     nextState.assMeta = assMeta;
+    nextState.fontBuffers = this.combineFontPayloads(this.autoFontBuffers, mergedStyle);
 
     this.rawSubContent = rawSub;
     this.state = nextState;

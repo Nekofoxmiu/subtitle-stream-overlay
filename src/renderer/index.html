@@ -226,6 +226,14 @@
       box-shadow: 0 14px 22px -14px rgba(15, 23, 42, 0.35);
     }
 
+    .btn:disabled,
+    .btn[aria-disabled="true"] {
+      cursor: not-allowed;
+      opacity: 0.5;
+      box-shadow: none;
+      transform: none;
+    }
+
     .btn.primary {
       background: var(--accent-strong);
       color: #fff;
@@ -369,6 +377,69 @@
       font-weight: 600;
       min-width: 120px;
       color: #1e293b;
+    }
+
+    .toggle-row {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .toggle-row small {
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .toggle-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      color: var(--text-primary);
+      position: relative;
+    }
+
+    .toggle-control input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .toggle-slider {
+      width: 46px;
+      height: 26px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.4);
+      display: inline-flex;
+      align-items: center;
+      padding: 0 3px;
+      transition: background 0.18s ease;
+      position: relative;
+    }
+
+    .toggle-slider::after {
+      content: '';
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 4px 10px rgba(15, 23, 42, 0.2);
+      transform: translateX(0);
+      transition: transform 0.18s ease;
+    }
+
+    .toggle-control input:checked + .toggle-slider {
+      background: var(--accent);
+    }
+
+    .toggle-control input:checked + .toggle-slider::after {
+      transform: translateX(18px);
+    }
+
+    .toggle-control input:focus-visible + .toggle-slider {
+      outline: 3px solid rgba(37, 99, 235, 0.45);
+      outline-offset: 2px;
     }
 
     .field-body {
@@ -1085,8 +1156,17 @@
           </span>
         </summary>
         <div class="accordion-content">
+          <div class="row toggle-row">
+            <label class="toggle-control">
+              <input type="checkbox" id="forceDefaultFontToggle" checked aria-checked="true">
+              <span class="toggle-slider" aria-hidden="true"></span>
+              <span>強制覆蓋 Default 樣式字型</span>
+            </label>
+            <small>未匯入字型時將使用內建 NotoSans-Regular。</small>
+          </div>
           <div class="row">
             <button id="pickFonts" class="btn">上傳字型</button>
+            <button id="clearFonts" class="btn ghost small" type="button" aria-disabled="true" disabled>清除字型</button>
             <span id="fontsPicked" class="mono muted"></span>
           </div>
         </div>

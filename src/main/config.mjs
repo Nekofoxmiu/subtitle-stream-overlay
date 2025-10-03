@@ -18,7 +18,9 @@ export const store = new Store({
         mode: 'advance',
         seconds: 0
       },
-      subtitleOffsetOverrides: {}
+      subtitleOffsetOverrides: {},
+      forceDefaultFont: true,
+      defaultFontFamily: 'NotoSans-Regular'
     },
     player: {
       volume: 0.8

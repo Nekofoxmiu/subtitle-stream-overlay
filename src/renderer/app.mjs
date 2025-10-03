@@ -25,6 +25,8 @@ const dom = {
   checkBins: $('#checkBins'),
   pickSubs: $('#pickSubs'),
   pickFonts: $('#pickFonts'),
+  clearFonts: $('#clearFonts'),
+  forceDefaultFontToggle: $('#forceDefaultFontToggle'),
   ytDownload: $('#ytDownload'),
   ytDownloadAudio: $('#ytDownloadAudio'),
   ytCancel: $('#ytCancel'),
@@ -64,6 +66,8 @@ dom.subsCacheSearch = subsCacheControls?.search || null;
 const state = {
   currentAssText: '',
   currentFonts: [],
+  forceDefaultFont: true,
+  defaultFontFamily: 'NotoSans-Regular',
   jobId: null,
   activeDownloadMode: null,
   cachedEntries: [], // { id, title, videoFilename, subsFilename, ... }
@@ -111,6 +115,9 @@ const LEGACY_ALIGN_MAP = {
   top: 'top-center',
   bottom: 'bottom-center'
 };
+
+const BUILTIN_DEFAULT_FONT_FAMILY = 'NotoSans-Regular';
+const FONT_MANAGEMENT_DISABLED_HINT = '需開啟強制覆蓋 Default 樣式字型後才能操作';
 
 function normalizeAlignValue(raw) {
   if (raw == null) return 'off';
@@ -196,14 +203,87 @@ function describeFontName(font) {
   return '';
 }
 
+function sanitizeFontFamilyName(rawName) {
+  if (typeof rawName !== 'string') return '';
+  const trimmed = rawName.trim();
+  if (!trimmed) return '';
+  const withoutExt = trimmed.replace(/\.[^.]+$/, '');
+  return withoutExt.trim();
+}
+
+function deriveDefaultFontFamily({ fonts = state.currentFonts, forceDefault = state.forceDefaultFont } = {}) {
+  if (!forceDefault) return '';
+  if (Array.isArray(fonts)) {
+    for (const font of fonts) {
+      const label = describeFontName(font) || font?.name || '';
+      const sanitized = sanitizeFontFamilyName(label);
+      if (sanitized) return sanitized;
+    }
+  }
+  return BUILTIN_DEFAULT_FONT_FAMILY;
+}
+
+function updateFontControlsAvailability() {
+  const canManageFonts = state.forceDefaultFont !== false;
+  const hasFonts = Array.isArray(state.currentFonts) && state.currentFonts.length > 0;
+
+  if (dom.pickFonts) {
+    dom.pickFonts.disabled = !canManageFonts;
+    dom.pickFonts.setAttribute('aria-disabled', canManageFonts ? 'false' : 'true');
+    if (!canManageFonts) {
+      dom.pickFonts.title = FONT_MANAGEMENT_DISABLED_HINT;
+    } else {
+      dom.pickFonts.removeAttribute('title');
+    }
+  }
+
+  if (dom.clearFonts) {
+    const disabled = !canManageFonts || !hasFonts;
+    dom.clearFonts.disabled = disabled;
+    dom.clearFonts.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    if (!canManageFonts) {
+      dom.clearFonts.title = FONT_MANAGEMENT_DISABLED_HINT;
+    } else if (!hasFonts) {
+      dom.clearFonts.title = '尚未匯入字型';
+    } else {
+      dom.clearFonts.removeAttribute('title');
+    }
+  }
+}
+
 function updateFontsLabel(fonts = state.currentFonts) {
-  if (!dom.fontsPicked) return;
+  if (!dom.fontsPicked) {
+    updateFontControlsAvailability();
+    return;
+  }
+  const list = Array.isArray(fonts) ? fonts : [];
   const names = [];
-  for (const font of fonts || []) {
+  for (const font of list) {
     const label = describeFontName(font);
     if (label) names.push(label);
   }
-  dom.fontsPicked.textContent = names.join(', ');
+  if (names.length) {
+    dom.fontsPicked.textContent = names.join(', ');
+  } else if (state.forceDefaultFont) {
+    dom.fontsPicked.textContent = `使用內建 ${BUILTIN_DEFAULT_FONT_FAMILY}`;
+  } else {
+    dom.fontsPicked.textContent = '未匯入字型';
+  }
+  updateFontControlsAvailability();
+}
+
+function getFontPayloadForOverlay({ includeWhenDisabled = false } = {}) {
+  if (!includeWhenDisabled && state.forceDefaultFont === false) return null;
+  return Array.isArray(state.currentFonts) ? state.currentFonts : [];
+}
+
+function notifyOverlayWithCurrentFonts(patch = {}, options = {}) {
+  const fontPayload = getFontPayloadForOverlay(options);
+  const message = { ...patch };
+  if (fontPayload != null) {
+    message.fontBuffers = fontPayload;
+  }
+  window.api.notifyOverlay(message);
 }
 
 const OFFSET_EPSILON = 1e-6;
@@ -407,8 +487,16 @@ async function loadInitialConfig() {
   const cfg = await window.api.getConfig();
   const storedFonts = Array.isArray(cfg?.fonts) ? cfg.fonts.map(normalizeFontBuffer).filter(Boolean) : [];
   state.currentFonts = storedFonts;
-  updateFontsLabel(storedFonts);
   const output = cfg?.output || {};
+  state.forceDefaultFont = output?.forceDefaultFont !== false;
+  const storedDefaultFamilyRaw = typeof output?.defaultFontFamily === 'string' ? output.defaultFontFamily.trim() : '';
+  const computedDefaultFamily = deriveDefaultFontFamily({ fonts: storedFonts, forceDefault: state.forceDefaultFont });
+  state.defaultFontFamily = storedDefaultFamilyRaw || computedDefaultFamily;
+  if (dom.forceDefaultFontToggle) {
+    dom.forceDefaultFontToggle.checked = state.forceDefaultFont;
+    dom.forceDefaultFontToggle.setAttribute('aria-checked', state.forceDefaultFont ? 'true' : 'false');
+  }
+  updateFontsLabel(storedFonts);
   if (output.port != null) dom.portInput.value = String(output.port);
   if (output.maxWidth != null) dom.maxWidth.value = String(output.maxWidth);
   if (output.maxHeight != null) dom.maxHeight.value = String(output.maxHeight);
@@ -432,7 +520,7 @@ async function loadInitialConfig() {
   dom.portView.textContent = dom.portInput.value || '';
   dom.cookiesView.textContent = cfg?.cookiesPath ? cfg.cookiesPath : '(未設定)';
   const style = collectStyle();
-  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+  notifyOverlayWithCurrentFonts({ style }, { includeWhenDisabled: true });
   overlaySync.connect(getCurrentPort());
 }
 
@@ -546,6 +634,7 @@ function setupEventHandlers() {
   dom.pickVideo?.addEventListener('click', handlePickVideo);
   dom.pickSubs?.addEventListener('click', handlePickSubs);
   dom.pickFonts?.addEventListener('click', handlePickFonts);
+  dom.clearFonts?.addEventListener('click', handleClearFonts);
   dom.ytFetch?.addEventListener('click', handleFetchSubsOnly);
   dom.ytDownload?.addEventListener('click', handleDownloadVideo);
   dom.ytDownloadAudio?.addEventListener('click', handleDownloadAudio);
@@ -653,6 +742,16 @@ function setupEventHandlers() {
     dom.portView.textContent = dom.portInput.value || '';
   });
 
+  dom.forceDefaultFontToggle?.addEventListener('change', async () => {
+    state.forceDefaultFont = dom.forceDefaultFontToggle.checked;
+    dom.forceDefaultFontToggle.setAttribute('aria-checked', state.forceDefaultFont ? 'true' : 'false');
+    updateFontsLabel();
+    const style = collectStyle();
+    await persistStyle(style);
+    notifyOverlayWithCurrentFonts({ style });
+    dom.forceDefaultFontToggle.blur();
+  });
+
   if (dom.subtitleOffsetToggle) {
     dom.subtitleOffsetToggle.addEventListener('click', async () => {
       const nextMode = state.subtitleOffsetMode === 'delay' ? 'advance' : 'delay';
@@ -682,10 +781,9 @@ function setupEventHandlers() {
     await persistStyle(style);
     state.overlayRefreshSeq += 1;
     const refreshToken = `${Date.now()}-${state.overlayRefreshSeq}`;
-    window.api.notifyOverlay({
+    notifyOverlayWithCurrentFonts({
       style,
       subContent: state.currentAssText,
-      fontBuffers: state.currentFonts,
       refreshToken
     });
     dom.applyMsg.textContent = `已更新。請以 OBS Browser Source 指向 http://localhost:${style.port}/overlay 或使用REALESE 中的 HTML 檔案。`;
@@ -1450,10 +1548,9 @@ async function loadAssIntoOverlay(assPath) {
   await persistStyle(style);
   state.overlayRefreshSeq += 1;
   const refreshToken = `subs-${Date.now()}-${state.overlayRefreshSeq}`;
-  window.api.notifyOverlay({
+  notifyOverlayWithCurrentFonts({
     style,
     subContent: state.currentAssText,
-    fontBuffers: state.currentFonts,
     refreshToken
   });
   syncOverlayConnection();
@@ -1461,6 +1558,10 @@ async function loadAssIntoOverlay(assPath) {
 
 /* ---------------- 字型 ---------------- */
 async function handlePickFonts() {
+  if (state.forceDefaultFont === false) {
+    updateFontControlsAvailability();
+    return;
+  }
   const files = await window.api.openFiles({ filters: [{ name: 'Fonts', extensions: ['ttf', 'otf', 'woff2', 'woff'] }] });
   if (!files.length) return;
   state.currentFonts = [];
@@ -1473,7 +1574,24 @@ async function handlePickFonts() {
   const style = collectStyle();
   await persistFonts(state.currentFonts);
   await persistStyle(style);
-  window.api.notifyOverlay({ style, fontBuffers: state.currentFonts });
+  notifyOverlayWithCurrentFonts({ style }, { includeWhenDisabled: true });
+}
+
+async function handleClearFonts() {
+  if (state.forceDefaultFont === false) {
+    updateFontControlsAvailability();
+    return;
+  }
+  state.currentFonts = [];
+  updateFontsLabel();
+  try {
+    await persistFonts(state.currentFonts);
+  } catch (err) {
+    console.error('[fonts] 無法儲存字型設定', err);
+  }
+  const style = collectStyle();
+  await persistStyle(style);
+  notifyOverlayWithCurrentFonts({ style }, { includeWhenDisabled: true });
 }
 
 /* ---------------- Binaries ---------------- */
@@ -1661,6 +1779,11 @@ function collectStyle() {
   const overrides = normalizeSubtitleOffsetOverrides(state.subtitleOffsetOverrides, defaults);
   state.subtitleOffsetOverrides = overrides;
 
+  const forceDefaultFont = state.forceDefaultFont !== false;
+  const defaultFontFamily = deriveDefaultFontFamily({ fonts: state.currentFonts, forceDefault: forceDefaultFont });
+  state.forceDefaultFont = forceDefaultFont;
+  state.defaultFontFamily = defaultFontFamily;
+
   return {
     port: getCurrentPort(),
     background: dom.background?.value || 'transparent',
@@ -1670,7 +1793,9 @@ function collectStyle() {
     subtitleOffsetMode: mode,
     subtitleOffsetSeconds: seconds,
     subtitleOffsetDefaults: defaults,
-    subtitleOffsetOverrides: overrides
+    subtitleOffsetOverrides: overrides,
+    forceDefaultFont,
+    defaultFontFamily
   };
 }
 
