@@ -226,6 +226,14 @@
       box-shadow: 0 14px 22px -14px rgba(15, 23, 42, 0.35);
     }
 
+    .btn:disabled,
+    .btn[aria-disabled="true"] {
+      cursor: not-allowed;
+      opacity: 0.5;
+      box-shadow: none;
+      transform: none;
+    }
+
     .btn.primary {
       background: var(--accent-strong);
       color: #fff;
@@ -1148,11 +1156,6 @@
           </span>
         </summary>
         <div class="accordion-content">
-          <div class="row">
-            <button id="pickFonts" class="btn">上傳字型</button>
-            <button id="clearFonts" class="btn ghost small" type="button" aria-disabled="true" disabled>清除字型</button>
-            <span id="fontsPicked" class="mono muted"></span>
-          </div>
           <div class="row toggle-row">
             <label class="toggle-control">
               <input type="checkbox" id="forceDefaultFontToggle" checked aria-checked="true">
@@ -1160,6 +1163,11 @@
               <span>強制覆蓋 Default 樣式字型</span>
             </label>
             <small>未匯入字型時將使用內建 NotoSans-Regular。</small>
+          </div>
+          <div class="row">
+            <button id="pickFonts" class="btn">上傳字型</button>
+            <button id="clearFonts" class="btn ghost small" type="button" aria-disabled="true" disabled>清除字型</button>
+            <span id="fontsPicked" class="mono muted"></span>
           </div>
         </div>
       </details>

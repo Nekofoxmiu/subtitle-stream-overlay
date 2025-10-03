@@ -117,6 +117,7 @@ const LEGACY_ALIGN_MAP = {
 };
 
 const BUILTIN_DEFAULT_FONT_FAMILY = 'NotoSans-Regular';
+const FONT_MANAGEMENT_DISABLED_HINT = '需開啟強制覆蓋 Default 樣式字型後才能操作';
 
 function normalizeAlignValue(raw) {
   if (raw == null) return 'off';
@@ -222,8 +223,39 @@ function deriveDefaultFontFamily({ fonts = state.currentFonts, forceDefault = st
   return BUILTIN_DEFAULT_FONT_FAMILY;
 }
 
+function updateFontControlsAvailability() {
+  const canManageFonts = state.forceDefaultFont !== false;
+  const hasFonts = Array.isArray(state.currentFonts) && state.currentFonts.length > 0;
+
+  if (dom.pickFonts) {
+    dom.pickFonts.disabled = !canManageFonts;
+    dom.pickFonts.setAttribute('aria-disabled', canManageFonts ? 'false' : 'true');
+    if (!canManageFonts) {
+      dom.pickFonts.title = FONT_MANAGEMENT_DISABLED_HINT;
+    } else {
+      dom.pickFonts.removeAttribute('title');
+    }
+  }
+
+  if (dom.clearFonts) {
+    const disabled = !canManageFonts || !hasFonts;
+    dom.clearFonts.disabled = disabled;
+    dom.clearFonts.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    if (!canManageFonts) {
+      dom.clearFonts.title = FONT_MANAGEMENT_DISABLED_HINT;
+    } else if (!hasFonts) {
+      dom.clearFonts.title = '尚未匯入字型';
+    } else {
+      dom.clearFonts.removeAttribute('title');
+    }
+  }
+}
+
 function updateFontsLabel(fonts = state.currentFonts) {
-  if (!dom.fontsPicked) return;
+  if (!dom.fontsPicked) {
+    updateFontControlsAvailability();
+    return;
+  }
   const list = Array.isArray(fonts) ? fonts : [];
   const names = [];
   for (const font of list) {
@@ -237,11 +269,7 @@ function updateFontsLabel(fonts = state.currentFonts) {
   } else {
     dom.fontsPicked.textContent = '未匯入字型';
   }
-  if (dom.clearFonts) {
-    const hasFonts = list.length > 0;
-    dom.clearFonts.disabled = !hasFonts;
-    dom.clearFonts.setAttribute('aria-disabled', hasFonts ? 'false' : 'true');
-  }
+  updateFontControlsAvailability();
 }
 
 function getFontPayloadForOverlay({ includeWhenDisabled = false } = {}) {
@@ -1530,6 +1558,10 @@ async function loadAssIntoOverlay(assPath) {
 
 /* ---------------- 字型 ---------------- */
 async function handlePickFonts() {
+  if (state.forceDefaultFont === false) {
+    updateFontControlsAvailability();
+    return;
+  }
   const files = await window.api.openFiles({ filters: [{ name: 'Fonts', extensions: ['ttf', 'otf', 'woff2', 'woff'] }] });
   if (!files.length) return;
   state.currentFonts = [];
@@ -1546,6 +1578,10 @@ async function handlePickFonts() {
 }
 
 async function handleClearFonts() {
+  if (state.forceDefaultFont === false) {
+    updateFontControlsAvailability();
+    return;
+  }
   state.currentFonts = [];
   updateFontsLabel();
   try {
