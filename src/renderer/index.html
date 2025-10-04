@@ -722,11 +722,11 @@
     }
 
     @keyframes custom-select-marquee {
-      0% {
+      0%, 5% {
         transform: translateX(0);
       }
 
-      100% {
+      85%, 100% {
         transform: translateX(calc(-1 * var(--marquee-distance, 0px)));
       }
     }
