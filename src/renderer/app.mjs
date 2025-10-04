@@ -87,6 +87,10 @@ function enhanceCustomSelect(select) {
   parent.insertBefore(wrapper, select);
   wrapper.appendChild(select);
 
+  if (select.dataset.customSelectPlacement === 'dropup') {
+    wrapper.classList.add('custom-select--dropup');
+  }
+
   select.classList.add('custom-select__native');
   select.dataset.customSelect = 'enhanced';
   select.setAttribute('aria-hidden', 'true');
@@ -2641,6 +2645,7 @@ function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   container.appendChild(searchInput);
   const select = document.createElement('select');
   select.classList.add('cache-row__select');
+  select.dataset.customSelectPlacement = 'dropup';
   select.disabled = true;
   container.appendChild(select);
   if (hint) {
