@@ -489,14 +489,17 @@ function enhanceCustomSelect(select) {
       }
       marquee.style.removeProperty('--marquee-distance');
       marquee.style.removeProperty('--marquee-duration');
+      delete marquee.dataset.marqueeLabel;
+      delete marquee.dataset.marqueeDistance;
+      delete marquee.dataset.marqueeDuration;
       return;
     }
     if (textWidth > containerWidth + 2) {
-      marquee.classList.add('is-marquee');
       const primaryLabel = primaryText.textContent || '';
       if (cloneText.textContent !== primaryLabel) {
         cloneText.textContent = primaryLabel;
       }
+      const previousLabel = marquee.dataset.marqueeLabel || '';
       const gapValue = (() => {
         const style = window.getComputedStyle(marquee);
         const gap = parseFloat(style.columnGap || style.gap || '0');
@@ -504,11 +507,31 @@ function enhanceCustomSelect(select) {
       })();
       const distance = textWidth + gapValue;
       const duration = Math.max(6, Math.min(30, distance / 36));
-      marquee.style.setProperty('--marquee-distance', `${distance}px`);
-      marquee.style.setProperty('--marquee-duration', `${duration}s`);
-      if (marquee.dataset.interacting === 'true') {
+      const distanceValue = `${distance}px`;
+      const durationValue = `${duration}s`;
+      const previousDistance = marquee.dataset.marqueeDistance || '';
+      const previousDuration = marquee.dataset.marqueeDuration || '';
+      const distanceChanged = previousDistance !== distanceValue;
+      const durationChanged = previousDuration !== durationValue;
+      const labelChanged = previousLabel !== primaryLabel;
+      marquee.dataset.marqueeLabel = primaryLabel;
+      marquee.dataset.marqueeDistance = distanceValue;
+      marquee.dataset.marqueeDuration = durationValue;
+      if (marquee.style.getPropertyValue('--marquee-distance') !== distanceValue) {
+        marquee.style.setProperty('--marquee-distance', distanceValue);
+      }
+      if (marquee.style.getPropertyValue('--marquee-duration') !== durationValue) {
+        marquee.style.setProperty('--marquee-duration', durationValue);
+      }
+      const wasMarquee = marquee.classList.contains('is-marquee');
+      if (!wasMarquee) {
+        marquee.classList.add('is-marquee');
+      }
+      const interacting = marquee.dataset.interacting === 'true';
+      const shouldRestart = interacting && (!wasMarquee || labelChanged || distanceChanged || durationChanged);
+      if (shouldRestart) {
         startMarqueeAnimation(marquee);
-      } else {
+      } else if (!interacting) {
         marquee.dataset.paused = 'true';
         marquee.classList.remove('is-animating');
       }
@@ -520,6 +543,9 @@ function enhanceCustomSelect(select) {
       }
       marquee.style.removeProperty('--marquee-distance');
       marquee.style.removeProperty('--marquee-duration');
+      delete marquee.dataset.marqueeLabel;
+      delete marquee.dataset.marqueeDistance;
+      delete marquee.dataset.marqueeDuration;
     }
   }
 
