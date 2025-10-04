@@ -113,7 +113,7 @@ function enhanceCustomSelect(select) {
   display.className = 'custom-select__display';
   const marquee = document.createElement('span');
   marquee.className = 'custom-select__marquee';
-  marquee.dataset.paused = 'false';
+  marquee.dataset.paused = 'true';
   const primaryText = document.createElement('span');
   primaryText.className = 'custom-select__text';
   primaryText.id = displayId;
@@ -438,7 +438,7 @@ function enhanceCustomSelect(select) {
     const textWidth = primaryText.scrollWidth;
     if (!containerWidth || !textWidth) {
       marquee.classList.remove('is-marquee');
-      marquee.dataset.paused = 'false';
+      marquee.dataset.paused = 'true';
       cloneText.textContent = '';
       marquee.style.removeProperty('--marquee-distance');
       marquee.style.removeProperty('--marquee-duration');
@@ -456,10 +456,12 @@ function enhanceCustomSelect(select) {
       const duration = Math.max(6, Math.min(30, distance / 36));
       marquee.style.setProperty('--marquee-distance', `${distance}px`);
       marquee.style.setProperty('--marquee-duration', `${duration}s`);
-      marquee.dataset.paused = marquee.dataset.paused === 'true' ? 'true' : 'false';
+      if (marquee.dataset.paused !== 'false') {
+        marquee.dataset.paused = 'true';
+      }
     } else {
       marquee.classList.remove('is-marquee');
-      marquee.dataset.paused = 'false';
+      marquee.dataset.paused = 'true';
       cloneText.textContent = '';
       marquee.style.removeProperty('--marquee-distance');
       marquee.style.removeProperty('--marquee-duration');
@@ -587,14 +589,19 @@ function enhanceCustomSelect(select) {
     }
   });
 
-  trigger.addEventListener('mouseenter', () => {
+  const resumeTriggerMarquee = () => {
     if (marquee.classList.contains('is-marquee')) {
-      marquee.dataset.paused = 'true';
+      marquee.dataset.paused = 'false';
     }
-  });
-  trigger.addEventListener('mouseleave', () => {
-    marquee.dataset.paused = 'false';
-  });
+  };
+  const pauseTriggerMarquee = () => {
+    marquee.dataset.paused = 'true';
+  };
+
+  trigger.addEventListener('mouseenter', resumeTriggerMarquee);
+  trigger.addEventListener('mouseleave', pauseTriggerMarquee);
+  trigger.addEventListener('focus', resumeTriggerMarquee);
+  trigger.addEventListener('blur', pauseTriggerMarquee);
 
   select.addEventListener('change', () => {
     updateSelection({ preserveActive: isOpen });
