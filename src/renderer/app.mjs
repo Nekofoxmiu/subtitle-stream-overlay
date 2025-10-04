@@ -321,6 +321,8 @@ function handleRemoteNowPlaying(raw) {
     if (keyChanged && state.activeSubsId) {
       applySubtitleOffsetForSelection({ subsId: state.activeSubsId, notify: true });
     }
+    applyRemoteMediaUiState();
+    updateVideoCacheSelect(state.activeVideoId);
   }
   updateActiveCacheInfo();
 }
@@ -350,13 +352,52 @@ function updateRemoteToggleUI() {
   dom.useRemoteTimelineToggle.setAttribute('aria-checked', state.useRemoteTimeline ? 'true' : 'false');
 }
 
+function getRemoteMediaLabel(remote = state.remoteNowPlaying) {
+  if (!remote || typeof remote !== 'object') return '外部時間軸已啟用';
+  const parts = [];
+  if (remote.title) parts.push(remote.title);
+  if (Array.isArray(remote.artists) && remote.artists.length) parts.push(remote.artists.join(', '));
+  if (!parts.length && remote.platform) parts.push(remote.platform);
+  return parts.length ? parts.join(' - ') : '外部時間軸已啟用';
+}
+
+function applyRemoteMediaUiState() {
+  const usingRemote = Boolean(state.useRemoteTimeline);
+  if (dom.videoCacheSearch) {
+    dom.videoCacheSearch.disabled = usingRemote;
+    dom.videoCacheSearch.classList.toggle('is-remote-disabled', usingRemote);
+  }
+  if (dom.pickVideo) {
+    dom.pickVideo.disabled = usingRemote;
+    dom.pickVideo.classList.toggle('is-remote-disabled', usingRemote);
+  }
+  const select = dom.videoCacheSelect;
+  if (!select) return;
+  select.classList.toggle('is-remote-disabled', usingRemote);
+  if (usingRemote) {
+    const label = getRemoteMediaLabel();
+    select.innerHTML = '';
+    const option = new Option(label, '', true, true);
+    option.disabled = true;
+    select.add(option);
+    select.disabled = true;
+  } else {
+    select.disabled = false;
+  }
+}
+
 function setRemoteTimelineEnabled(enabled, { persist = false } = {}) {
-  state.useRemoteTimeline = Boolean(enabled);
-  state.remoteMediaKey = state.useRemoteTimeline ? (getRemoteMediaKey() || state.remoteMediaKey || '') : '';
+  const enablingRemote = Boolean(enabled);
+  state.useRemoteTimeline = enablingRemote;
+  state.remoteMediaKey = enablingRemote ? (getRemoteMediaKey() || state.remoteMediaKey || '') : '';
   updateRemoteToggleUI();
   overlaySync.connect(getCurrentPort());
   if (state.useRemoteTimeline) {
     overlaySync.stop();
+    if (state.activeVideoId) {
+      state.activeVideoId = '';
+      loadVideoEntry(null);
+    }
     if (state.remoteNowPlaying) applyRemoteTimeline(state.remoteNowPlaying);
   } else {
     overlaySync.start();
@@ -365,6 +406,8 @@ function setRemoteTimelineEnabled(enabled, { persist = false } = {}) {
     persistPlayerConfig();
   }
   updateActiveCacheInfo();
+  applyRemoteMediaUiState();
+  updateVideoCacheSelect(state.activeVideoId);
   const canApplyOffset = state.activeSubsId && (!state.useRemoteTimeline || state.remoteMediaKey);
   if (canApplyOffset) {
     applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
@@ -1528,13 +1571,15 @@ function formatSubtitleOptionLabel(entry) {
 function updateVideoCacheSelect(selectedId = state.activeVideoId) {
   const select = dom.videoCacheSelect;
   if (!select) return;
+  applyRemoteMediaUiState();
+  if (state.useRemoteTimeline) return;
   const searchTerm = (state.videoSearch || '').toLowerCase();
   const entries = state.cachedEntries
     .filter((entry) => entry?.hasVideo && entry.videoFilename && matchesEntrySearch(entry, searchTerm));
   populateSelect(select, entries, {
     selectedId,
     placeholder: '選擇影片或音訊',
-    emptyLabel: state.videoSearch ? '（沒有符合的媒體）' : '（尚無快取媒體）',
+    emptyLabel: state.videoSearch ? '（沒有符合的媒體）' : '（尚未匯入媒體）',
     buildLabel: formatVideoOptionLabel,
     buildTitle: (entry) => entry.videoPath || entry.videoFilename || ''
   });
