@@ -2632,7 +2632,7 @@ function debounce(fn, ms = 120) {
 function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   if (!rowEl || !rowEl.parentElement) return null;
   const container = document.createElement('div');
-  container.className = 'row cache-row';
+  container.className = 'row';
   if (label) {
     const labelEl = document.createElement('label');
     labelEl.textContent = label || '';
@@ -2641,10 +2641,10 @@ function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.placeholder = searchPlaceholder || '';
-  searchInput.classList.add('cache-row__search');
+  searchInput.style.width = '100%';
   container.appendChild(searchInput);
   const select = document.createElement('select');
-  select.classList.add('cache-row__select');
+  select.style.minWidth = '260px';
   select.dataset.customSelectPlacement = 'dropup';
   select.disabled = true;
   container.appendChild(select);
