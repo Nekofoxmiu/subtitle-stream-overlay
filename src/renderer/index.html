@@ -275,12 +275,12 @@
     .main-area {
       padding: 0 32px 32px;
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
       gap: 18px;
     }
 
     .main-area.controls-collapsed {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .card {
@@ -1247,7 +1247,7 @@
 
     @media (min-width: 980px) {
       .main-area {
-        grid-template-columns: 1fr 1.2fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
       }
 
     }
