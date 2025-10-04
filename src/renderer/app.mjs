@@ -4,6 +4,7 @@ const dom = {
   appShell: document.querySelector('.app-shell'),
   binInfo: $('#binInfo'),
   mainArea: document.querySelector('.main-area'),
+  previewArea: document.querySelector('.preview-area'),
   controlCard: $('#controlCard'),
   controlToggle: $('#controlCardToggle'),
   controlRestore: $('#controlCardRestore'),
@@ -19,6 +20,15 @@ const dom = {
   videoFile: $('#videoFile'),
   pickVideo: $('#pickVideo'),
   useRemoteTimelineToggle: $('#useRemoteTimelineToggle'),
+  remotePlayer: $('#remotePlayer'),
+  remotePlayerCover: $('#remotePlayerCover'),
+  remotePlayerCoverFallback: $('#remotePlayerCoverFallback'),
+  remotePlayerTitle: $('#remotePlayerTitle'),
+  remotePlayerSubtitle: $('#remotePlayerSubtitle'),
+  remotePlayerStatus: $('#remotePlayerStatus'),
+  remotePlayerCurrent: $('#remotePlayerCurrent'),
+  remotePlayerDuration: $('#remotePlayerDuration'),
+  remotePlayerProgressFill: $('#remotePlayerProgressFill'),
   ytUrl: $('#ytUrl'),
   fontsPicked: $('#fontsPicked'),
   pickCookies: $('#pickCookies'),
@@ -89,6 +99,7 @@ const state = {
   remoteLastGuid: '',
   remoteLastUpdate: 0,
   remoteMediaKey: '',
+  remoteProgressTimer: null,
   subtitleOffsetMode: 'advance',
   subtitleOffsetSeconds: 0,
   subtitleOffsetDefaults: { mode: 'advance', seconds: 0 },
@@ -323,6 +334,11 @@ function handleRemoteNowPlaying(raw) {
     }
     applyRemoteMediaUiState();
     updateVideoCacheSelect(state.activeVideoId);
+    updateRemotePlayerUi(payload);
+    startRemoteProgressTimer();
+  } else {
+    updateRemotePlayerUi(payload);
+    stopRemoteProgressTimer();
   }
   updateActiveCacheInfo();
 }
@@ -342,6 +358,160 @@ function applyRemoteTimeline(payload) {
     } else if (payload.status === 'paused' || payload.status === 'stopped') {
       try { video.pause(); } catch { /* noop */ }
     }
+  }
+}
+
+
+function updateRemotePlayerVisibility() {
+  const usingRemote = Boolean(state.useRemoteTimeline);
+  if (dom.previewArea) {
+    dom.previewArea.classList.toggle('remote-active', usingRemote);
+  }
+  if (dom.remotePlayer) {
+    dom.remotePlayer.hidden = !usingRemote;
+    dom.remotePlayer.setAttribute('aria-hidden', usingRemote ? 'false' : 'true');
+  }
+  if (dom.video) {
+    dom.video.controls = !usingRemote;
+    dom.video.classList.toggle('remote-disabled', usingRemote);
+    if (usingRemote) {
+      dom.video.setAttribute('aria-hidden', 'true');
+      dom.video.setAttribute('tabindex', '-1');
+      dom.video.style.pointerEvents = 'none';
+      try { dom.video.pause(); } catch { /* noop */ }
+    } else {
+      dom.video.removeAttribute('aria-hidden');
+      dom.video.removeAttribute('tabindex');
+      dom.video.style.pointerEvents = '';
+    }
+  }
+}
+
+function formatClockTime(seconds) {
+  if (!Number.isFinite(seconds)) return '--:--';
+  const clamped = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(clamped / 3600);
+  const minutes = Math.floor((clamped % 3600) / 60);
+  const secs = clamped % 60;
+  const mm = String(minutes).padStart(hours > 0 ? 2 : 1, '0');
+  const ss = String(secs).padStart(2, '0');
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
+  if (!info || typeof info !== 'object') {
+    return { progress: null, duration: null };
+  }
+  const progressBase = Number.isFinite(info.progressSeconds)
+    ? info.progressSeconds
+    : (Number.isFinite(info.progressMs) ? info.progressMs / 1000 : null);
+  const duration = Number.isFinite(info.durationSeconds)
+    ? Math.max(0, info.durationSeconds)
+    : (Number.isFinite(info.durationMs) ? Math.max(0, info.durationMs / 1000) : null);
+  let progress = progressBase != null ? Math.max(0, progressBase) : null;
+  const status = String(info.status || '').toLowerCase();
+  const baseTs = Number.isFinite(info.receivedAt) ? info.receivedAt : state.remoteLastUpdate || Date.now();
+  if (progress != null && status === 'playing') {
+    const elapsed = Math.max(0, (Date.now() - baseTs) / 1000);
+    progress += elapsed;
+  }
+  if (progress != null && duration != null && duration > 0) {
+    progress = Math.min(progress, duration);
+  }
+  return { progress, duration };
+}
+
+function updateRemoteProgressDisplay(info = state.remoteNowPlaying) {
+  if (!dom.remotePlayerCurrent || !dom.remotePlayerDuration || !dom.remotePlayerProgressFill) return;
+  const { progress, duration } = getRemoteProgressEstimate(info);
+  const currentText = progress != null ? formatClockTime(progress) : '0:00';
+  dom.remotePlayerCurrent.textContent = currentText;
+  const isLive = info?.isLive === true;
+  if (isLive) {
+    dom.remotePlayerDuration.textContent = 'LIVE';
+    dom.remotePlayerDuration.classList.add('is-live');
+  } else {
+    dom.remotePlayerDuration.classList.remove('is-live');
+    dom.remotePlayerDuration.textContent = (duration != null && duration > 0)
+      ? formatClockTime(duration)
+      : '--:--';
+  }
+  const ratio = (progress != null && duration != null && duration > 0)
+    ? Math.min(1, Math.max(0, progress / duration))
+    : 0;
+  dom.remotePlayerProgressFill.style.width = `${(ratio * 100).toFixed(2)}%`;
+}
+
+function getRemoteStatusLabel(info = state.remoteNowPlaying) {
+  if (!info || typeof info !== 'object') return '等待播放';
+  const status = String(info.status || '').toLowerCase();
+  const isLive = info.isLive === true;
+  if (status === 'playing') return isLive ? '直播中' : '播放中';
+  if (status === 'paused') return isLive ? '直播暫停' : '已暫停';
+  if (status === 'stopped') return isLive ? '直播結束' : '已停止';
+  return info.title || info.artists?.length ? '已連線' : '等待播放';
+}
+
+function updateRemotePlayerUi(info = state.remoteNowPlaying) {
+  if (!dom.remotePlayer) return;
+  const remote = info && typeof info === 'object' ? info : null;
+  const hasRemote = Boolean(remote);
+  const title = remote?.title || '外部時間軸';
+  const artists = Array.isArray(remote?.artists) && remote.artists.length
+    ? remote.artists.join(', ')
+    : '';
+  const platform = remote?.platform ? `@${remote.platform}` : '';
+  const subtitleParts = [artists, platform].filter(Boolean);
+  if (dom.remotePlayerTitle) dom.remotePlayerTitle.textContent = title;
+  if (dom.remotePlayerSubtitle) {
+    dom.remotePlayerSubtitle.textContent = subtitleParts.length
+      ? subtitleParts.join(' · ')
+      : (hasRemote ? '外部時間軸已啟用' : '等待外部播放資訊...');
+  }
+  if (dom.remotePlayerStatus) dom.remotePlayerStatus.textContent = getRemoteStatusLabel(remote);
+
+  const coverUrl = typeof remote?.cover === 'string' ? remote.cover : '';
+  if (dom.remotePlayerCover) {
+    if (coverUrl) {
+      dom.remotePlayerCover.src = coverUrl;
+      dom.remotePlayerCover.alt = title ? `${title} 封面` : '播放封面';
+      dom.remotePlayerCover.hidden = false;
+    } else {
+      dom.remotePlayerCover.hidden = true;
+      dom.remotePlayerCover.removeAttribute('src');
+      dom.remotePlayerCover.removeAttribute('alt');
+    }
+  }
+  if (dom.remotePlayerCoverFallback) {
+    const fallbackChar = remote?.title?.trim()?.[0] || '♪';
+    dom.remotePlayerCoverFallback.textContent = fallbackChar;
+    dom.remotePlayerCoverFallback.hidden = Boolean(coverUrl);
+  }
+
+  const status = String(remote?.status || '').toLowerCase();
+  dom.remotePlayer.classList.toggle('is-playing', status === 'playing');
+  dom.remotePlayer.classList.toggle('is-paused', status === 'paused');
+  dom.remotePlayer.classList.toggle('is-stopped', !status || status === 'stopped');
+
+  updateRemoteProgressDisplay(remote);
+}
+
+function startRemoteProgressTimer() {
+  updateRemoteProgressDisplay();
+  if (state.remoteProgressTimer != null) return;
+  state.remoteProgressTimer = window.setInterval(() => {
+    if (!state.useRemoteTimeline) {
+      stopRemoteProgressTimer();
+      return;
+    }
+    updateRemoteProgressDisplay();
+  }, 500);
+}
+
+function stopRemoteProgressTimer() {
+  if (state.remoteProgressTimer != null) {
+    window.clearInterval(state.remoteProgressTimer);
+    state.remoteProgressTimer = null;
   }
 }
 
@@ -407,6 +577,14 @@ function setRemoteTimelineEnabled(enabled, { persist = false } = {}) {
   }
   updateActiveCacheInfo();
   applyRemoteMediaUiState();
+  updateRemotePlayerVisibility();
+  if (state.useRemoteTimeline) {
+    updateRemotePlayerUi();
+    startRemoteProgressTimer();
+  } else {
+    stopRemoteProgressTimer();
+    updateRemotePlayerUi();
+  }
   updateVideoCacheSelect(state.activeVideoId);
   const canApplyOffset = state.activeSubsId && (!state.useRemoteTimeline || state.remoteMediaKey);
   if (canApplyOffset) {
