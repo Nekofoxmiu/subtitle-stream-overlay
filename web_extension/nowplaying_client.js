@@ -54,6 +54,22 @@ function timestamp_to_ms(ts) {
     return 0;
 };
 
+function spotifyIsPlaying(el) {
+                const pressed = el.getAttribute('aria-pressed');
+                if (pressed !== null) return pressed === 'true';
+
+                // 回退到 aria-label：支援多語系關鍵字
+                const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+                // 「暫停/Pause」通常表示目前正在播放（按鈕動作是暫停）
+                const pauseKeys = ['暫停', '暂停', 'pause', 'pausa', 'pausear'];
+                const playKeys = ['播放', 'play', 'reproducir', 'lecture'];
+
+                if (pauseKeys.some(k => label.includes(k))) return true;   // 正在播放
+                if (playKeys.some(k => label.includes(k))) return false;  // 已暫停
+                // 無法判斷時回傳 null 或自訂預設
+                return null;
+            }
+
 function start_transfer() {
     transfer_interval = setInterval(() => {
         // TODO: maybe add more?
@@ -83,7 +99,8 @@ function start_transfer() {
             }
         } else if (hostname === 'open.spotify.com') {
             let data = navigator.mediaSession;
-            let status = query('.XrZ1iHVHAPMya3jkB2sa > button', e => e === null ? 'stopped' : (e.getAttribute('aria-label') === 'Play' || e.getAttribute('aria-label') === 'Слушать' || e.getAttribute('aria-label') === '播放' ? 'stopped' : 'playing'));
+            const playStatusEl = document.querySelector('button[data-testid="control-button-playpause"]');
+            let status = playStatusEl ? (spotifyIsPlaying(playStatusEl) ? 'playing' : 'stopped') : 'stopped';
             let cover = ''
             let title = ''
             let artists = ''
@@ -92,9 +109,10 @@ function start_transfer() {
                 title = data.metadata.title
                 artists = [data.metadata.artist]
             }
-
-            let progress = query('.IPbBrI6yF4zhaizFmrg6', e => timestamp_to_ms(e.textContent));
-            let duration = query('.DSdahCi0SDG37V9ZmsGO', e => timestamp_to_ms(e.textContent));
+            const progressEl = document.querySelector('div[data-testid="playback-position"]');
+            let progress = progressEl ? timestamp_to_ms(progressEl.textContent) : 0;
+            const durationEl = document.querySelector('div[data-testid="playback-duration"]');
+            let duration = durationEl ? timestamp_to_ms(durationEl.textContent) : 0;
             let song_link = ''
             if (document.querySelectorAll('a[aria-label][data-context-item-type="track"]').length > 0) {
                 song_link = 'https://open.spotify.com/track/' + decodeURIComponent(document.querySelectorAll('a[aria-label][data-context-item-type="track"]')[0].href).split(':').slice(-1)[0];
@@ -221,7 +239,7 @@ function start_transfer() {
 
             // 用 query 方式來獲取標題
             // 舊的 Query 方式: '#viewbox_report > div.video-info-title > div > h1'
-            let title = query('div.video-info-title > div > h1', e => e.getAttribute('title'));            
+            let title = query('div.video-info-title > div > h1', e => e.getAttribute('title'));
             if (!title)
                 return;
 
