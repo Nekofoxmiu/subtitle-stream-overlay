@@ -165,6 +165,7 @@ function enhanceCustomSelect(select) {
   }
 
   let optionButtons = [];
+  const optionMarquees = new WeakMap();
   let activeIndex = -1;
   let isOpen = false;
   let mirroredClasses = new Set();
@@ -306,6 +307,45 @@ function enhanceCustomSelect(select) {
     updateMarquee();
   }
 
+  function stopOptionMarquee(optionEl) {
+    const marqueeParts = optionMarquees.get(optionEl);
+    if (!marqueeParts) return;
+    const { marquee, clone } = marqueeParts;
+    marquee.classList.remove('is-marquee');
+    marquee.dataset.paused = 'true';
+    clone.textContent = '';
+    marquee.style.removeProperty('--marquee-distance');
+    marquee.style.removeProperty('--marquee-duration');
+  }
+
+  function startOptionMarquee(optionEl) {
+    const marqueeParts = optionMarquees.get(optionEl);
+    if (!marqueeParts) return;
+    const { container, marquee, primary, clone } = marqueeParts;
+    const containerWidth = container.offsetWidth;
+    const textWidth = primary.scrollWidth;
+    if (!containerWidth || !textWidth || textWidth <= containerWidth + 2) {
+      stopOptionMarquee(optionEl);
+      return;
+    }
+    clone.textContent = primary.textContent;
+    const gapValue = (() => {
+      const style = window.getComputedStyle(marquee);
+      const gap = parseFloat(style.columnGap || style.gap || '0');
+      return Number.isFinite(gap) ? gap : 0;
+    })();
+    const distance = textWidth + gapValue;
+    const duration = Math.max(6, Math.min(30, distance / 36));
+    marquee.style.setProperty('--marquee-distance', `${distance}px`);
+    marquee.style.setProperty('--marquee-duration', `${duration}s`);
+    marquee.classList.add('is-marquee');
+    marquee.dataset.paused = 'false';
+  }
+
+  function stopAllOptionMarquees() {
+    optionButtons.forEach((btn) => stopOptionMarquee(btn));
+  }
+
   function rebuildOptions() {
     optionButtons = [];
     list.innerHTML = '';
@@ -314,12 +354,33 @@ function enhanceCustomSelect(select) {
       optionEl.className = 'custom-select__option';
       optionEl.setAttribute('role', 'option');
       optionEl.id = `${listId}-option-${index}`;
-      optionEl.textContent = option?.textContent || option?.label || '';
+      const optionLabel = option?.textContent || option?.label || '';
       optionEl.dataset.index = String(index);
       optionEl.dataset.value = option?.value ?? '';
       if (option?.title) optionEl.title = option.title;
       if (option?.disabled) optionEl.setAttribute('aria-disabled', 'true');
       optionEl.setAttribute('aria-selected', option?.selected ? 'true' : 'false');
+
+      const label = document.createElement('span');
+      label.className = 'custom-select__option-label';
+      const marqueeEl = document.createElement('span');
+      marqueeEl.className = 'custom-select__marquee';
+      marqueeEl.dataset.paused = 'true';
+      const primaryEl = document.createElement('span');
+      primaryEl.className = 'custom-select__text';
+      primaryEl.textContent = optionLabel;
+      const cloneEl = document.createElement('span');
+      cloneEl.className = 'custom-select__text custom-select__text--clone';
+      marqueeEl.append(primaryEl, cloneEl);
+      label.appendChild(marqueeEl);
+      optionEl.appendChild(label);
+      optionMarquees.set(optionEl, {
+        container: label,
+        marquee: marqueeEl,
+        primary: primaryEl,
+        clone: cloneEl
+      });
+
       optionEl.addEventListener('click', () => {
         if (option?.disabled) return;
         setActiveIndex(index, { scrollIntoView: false });
@@ -328,6 +389,10 @@ function enhanceCustomSelect(select) {
       optionEl.addEventListener('pointerenter', () => {
         if (!isOpen || option?.disabled) return;
         setActiveIndex(index, { scrollIntoView: false });
+        startOptionMarquee(optionEl);
+      });
+      optionEl.addEventListener('pointerleave', () => {
+        stopOptionMarquee(optionEl);
       });
       optionButtons.push(optionEl);
       list.appendChild(optionEl);
@@ -455,6 +520,7 @@ function enhanceCustomSelect(select) {
     trigger.removeAttribute('aria-activedescendant');
     list.hidden = true;
     document.removeEventListener('pointerdown', handleDocumentPointerDown, true);
+    stopAllOptionMarquees();
     if (focusTrigger) {
       trigger.focus();
     }
