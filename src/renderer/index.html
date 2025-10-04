@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <!-- 僅保留本地/HTTP 播放，移除 YouTube 來源 -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self';
-                 img-src 'self' data:;
+                 img-src 'self' data: blob: https:;
                  style-src 'self' 'unsafe-inline';
                  script-src 'self';
                  connect-src 'self' ws://localhost:* http://localhost:* http://127.0.0.1:*;
@@ -584,7 +584,7 @@
       position: relative;
       display: inline-flex;
       justify-content: center;
-      align-items: stretch;
+      align-items: center;
       flex: 0 1 auto;
       width: auto;
       max-width: 100%;
@@ -592,23 +592,16 @@
       border-radius: 16px;
     }
 
-    .preview-area.remote-active #localVideo {
-      background-color: #0f172a;
-      background-image: var(--remote-cover-image, radial-gradient(circle at 25% 25%, rgba(148, 163, 184, 0.35), rgba(15, 23, 42, 0.8)));
-      background-size: cover;
-      background-position: center;
-      background-repeat: no-repeat;
-    }
-
     #localVideo.remote-mock {
-      aspect-ratio: 16 / 9;
       background-color: #0f172a;
       border-radius: inherit;
-      object-fit: cover;
     }
 
     #localVideo.remote-mock:not([data-remote-cover]) {
       background-image: radial-gradient(circle at 30% 20%, rgba(37, 99, 235, 0.28), rgba(15, 23, 42, 0.92));
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
     }
 
     .remote-hud {
@@ -624,6 +617,7 @@
       transition: opacity 0.22s ease;
       border-radius: inherit;
       overflow: hidden;
+      z-index: 1;
     }
 
     .preview-area.remote-active .remote-hud {
