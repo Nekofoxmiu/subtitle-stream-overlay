@@ -1124,9 +1124,10 @@ function clearRemoteCover() {
   state.remoteCoverToken += 1;
   revokeRemoteCoverObjectUrl();
   state.remoteCoverSource = '';
-  dom.video.style.removeProperty('--remote-cover-image');
   dom.video.removeAttribute('data-remote-cover');
-  dom.video.removeAttribute('poster');
+  if (dom.video.hasAttribute('poster')) {
+    dom.video.removeAttribute('poster');
+  }
 }
 
 async function applyRemoteCoverImage(rawUrl) {
@@ -1162,14 +1163,12 @@ async function applyRemoteCoverImage(rawUrl) {
     }
     revokeRemoteCoverObjectUrl();
     state.remoteCoverObjectUrl = objectUrl;
-    video.style.setProperty('--remote-cover-image', `url("${objectUrl}")`);
     video.setAttribute('data-remote-cover', 'object');
     video.poster = objectUrl;
   } catch (err) {
     if (state.remoteCoverToken !== token) return;
     console.warn('[remote] 無法透過 fetch 載入封面，改用原網址', err);
     revokeRemoteCoverObjectUrl();
-    video.style.setProperty('--remote-cover-image', `url("${url.replace(/"/g, '\\"')}")`);
     video.setAttribute('data-remote-cover', 'direct');
     video.poster = url;
   } finally {
