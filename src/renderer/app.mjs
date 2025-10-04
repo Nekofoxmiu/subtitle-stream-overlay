@@ -993,6 +993,10 @@ function updateRemotePlayerVisibility() {
       dom.video.removeAttribute('aria-hidden');
       dom.video.removeAttribute('tabindex');
       dom.video.style.pointerEvents = '';
+      if (dom.video.dataset.remotePoster === 'true') {
+        dom.video.removeAttribute('poster');
+        delete dom.video.dataset.remotePoster;
+      }
     }
   }
 }
@@ -1090,6 +1094,15 @@ function updateRemotePlayerUi(info = state.remoteNowPlaying) {
       dom.remotePlayerCover.hidden = true;
       dom.remotePlayerCover.removeAttribute('src');
       dom.remotePlayerCover.removeAttribute('alt');
+    }
+  }
+  if (dom.video) {
+    if (state.useRemoteTimeline && coverUrl) {
+      dom.video.poster = coverUrl;
+      dom.video.dataset.remotePoster = 'true';
+    } else if (dom.video.dataset.remotePoster === 'true') {
+      dom.video.removeAttribute('poster');
+      delete dom.video.dataset.remotePoster;
     }
   }
   if (dom.remotePlayerCoverFallback) {
