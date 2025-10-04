@@ -1209,15 +1209,36 @@ function applyRemoteMediaUiState() {
   select.classList.toggle('is-remote-disabled', usingRemote);
   if (usingRemote) {
     const label = getRemoteMediaLabel();
-    select.innerHTML = '';
-    const option = new Option(label, '', true, true);
-    option.disabled = true;
-    select.add(option);
+    const previousLabel = select.dataset.remoteLabel || '';
+    const hasSingleOption = select.options.length === 1;
+    const currentOption = hasSingleOption ? select.options[0] : null;
+    const needsRebuild =
+      !currentOption ||
+      currentOption.value !== '' ||
+      currentOption.disabled !== true ||
+      currentOption.textContent !== label;
+
     select.disabled = true;
+
+    if (needsRebuild) {
+      select.innerHTML = '';
+      const option = new Option(label, '', true, true);
+      option.disabled = true;
+      select.add(option);
+      refreshCustomSelect(select, { rebuildOptions: true });
+    } else if (previousLabel !== label) {
+      refreshCustomSelect(select, { rebuildOptions: true });
+    }
+
+    if (select.dataset.remoteLabel !== label) {
+      select.dataset.remoteLabel = label;
+    }
   } else {
     select.disabled = false;
+    if (select.dataset.remoteLabel) {
+      delete select.dataset.remoteLabel;
+    }
   }
-  refreshCustomSelect(select, { rebuildOptions: true });
 }
 
 function setRemoteTimelineEnabled(enabled, { persist = false } = {}) {
