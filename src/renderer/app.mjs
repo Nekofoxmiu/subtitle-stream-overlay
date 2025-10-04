@@ -114,6 +114,7 @@ function enhanceCustomSelect(select) {
   const marquee = document.createElement('span');
   marquee.className = 'custom-select__marquee';
   marquee.dataset.paused = 'true';
+  marquee.dataset.interacting = 'false';
   const primaryText = document.createElement('span');
   primaryText.className = 'custom-select__text';
   primaryText.id = displayId;
@@ -169,6 +170,32 @@ function enhanceCustomSelect(select) {
   let activeIndex = -1;
   let isOpen = false;
   let mirroredClasses = new Set();
+
+  const restartAnimation = (element) => {
+    if (!element) return;
+    element.classList.remove('is-animating');
+    void element.offsetWidth;
+    element.classList.add('is-animating');
+  };
+
+  const startMarqueeAnimation = (element) => {
+    if (!element) return;
+    element.dataset.interacting = 'true';
+    if (!element.classList.contains('is-marquee')) {
+      element.dataset.paused = 'true';
+      element.classList.remove('is-animating');
+      return;
+    }
+    element.dataset.paused = 'false';
+    restartAnimation(element);
+  };
+
+  const stopMarqueeAnimation = (element) => {
+    if (!element) return;
+    element.dataset.interacting = 'false';
+    element.dataset.paused = 'true';
+    element.classList.remove('is-animating');
+  };
 
   const hasResizeObserver = typeof ResizeObserver === 'function';
   const resizeObserver = hasResizeObserver
@@ -311,8 +338,8 @@ function enhanceCustomSelect(select) {
     const marqueeParts = optionMarquees.get(optionEl);
     if (!marqueeParts) return;
     const { marquee, clone } = marqueeParts;
+    stopMarqueeAnimation(marquee);
     marquee.classList.remove('is-marquee');
-    marquee.dataset.paused = 'true';
     clone.textContent = '';
     marquee.style.removeProperty('--marquee-distance');
     marquee.style.removeProperty('--marquee-duration');
@@ -339,7 +366,7 @@ function enhanceCustomSelect(select) {
     marquee.style.setProperty('--marquee-distance', `${distance}px`);
     marquee.style.setProperty('--marquee-duration', `${duration}s`);
     marquee.classList.add('is-marquee');
-    marquee.dataset.paused = 'false';
+    startMarqueeAnimation(marquee);
   }
 
   function stopAllOptionMarquees() {
@@ -366,6 +393,7 @@ function enhanceCustomSelect(select) {
       const marqueeEl = document.createElement('span');
       marqueeEl.className = 'custom-select__marquee';
       marqueeEl.dataset.paused = 'true';
+      marqueeEl.dataset.interacting = 'false';
       const primaryEl = document.createElement('span');
       primaryEl.className = 'custom-select__text';
       primaryEl.textContent = optionLabel;
@@ -437,8 +465,8 @@ function enhanceCustomSelect(select) {
     const containerWidth = display.offsetWidth;
     const textWidth = primaryText.scrollWidth;
     if (!containerWidth || !textWidth) {
+      stopMarqueeAnimation(marquee);
       marquee.classList.remove('is-marquee');
-      marquee.dataset.paused = 'true';
       cloneText.textContent = '';
       marquee.style.removeProperty('--marquee-distance');
       marquee.style.removeProperty('--marquee-duration');
@@ -456,12 +484,15 @@ function enhanceCustomSelect(select) {
       const duration = Math.max(6, Math.min(30, distance / 36));
       marquee.style.setProperty('--marquee-distance', `${distance}px`);
       marquee.style.setProperty('--marquee-duration', `${duration}s`);
-      if (marquee.dataset.paused !== 'false') {
+      if (marquee.dataset.interacting === 'true') {
+        startMarqueeAnimation(marquee);
+      } else {
         marquee.dataset.paused = 'true';
+        marquee.classList.remove('is-animating');
       }
     } else {
+      stopMarqueeAnimation(marquee);
       marquee.classList.remove('is-marquee');
-      marquee.dataset.paused = 'true';
       cloneText.textContent = '';
       marquee.style.removeProperty('--marquee-distance');
       marquee.style.removeProperty('--marquee-duration');
@@ -590,12 +621,10 @@ function enhanceCustomSelect(select) {
   });
 
   const resumeTriggerMarquee = () => {
-    if (marquee.classList.contains('is-marquee')) {
-      marquee.dataset.paused = 'false';
-    }
+    startMarqueeAnimation(marquee);
   };
   const pauseTriggerMarquee = () => {
-    marquee.dataset.paused = 'true';
+    stopMarqueeAnimation(marquee);
   };
 
   trigger.addEventListener('mouseenter', resumeTriggerMarquee);

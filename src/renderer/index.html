@@ -557,8 +557,12 @@
       transform: translateX(0);
     }
 
-    .custom-select__marquee.is-marquee {
+    .custom-select__marquee.is-marquee.is-animating {
       animation: custom-select-marquee linear infinite var(--marquee-duration, 8s);
+    }
+
+    .custom-select__marquee.is-marquee:not(.is-animating) {
+      transform: translateX(0);
     }
 
     .custom-select__marquee[data-paused="true"] {
@@ -574,7 +578,7 @@
       display: none;
     }
 
-    .custom-select__marquee.is-marquee .custom-select__text--clone {
+    .custom-select__marquee.is-marquee.is-animating .custom-select__text--clone {
       display: inline-block;
     }
 
