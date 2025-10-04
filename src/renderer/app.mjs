@@ -327,8 +327,12 @@ function enhanceCustomSelect(select) {
     });
     const selectedOption = options[selectedIndex] || options.find((option) => option && !option.disabled) || null;
     const label = selectedOption ? (selectedOption.textContent || selectedOption.label || '') : '';
-    primaryText.textContent = label;
-    cloneText.textContent = label;
+    if (primaryText.textContent !== label) {
+      primaryText.textContent = label;
+    }
+    if (cloneText.textContent !== label) {
+      cloneText.textContent = label;
+    }
     if (selectedOption?.title) trigger.title = selectedOption.title;
     else trigger.removeAttribute('title');
     if (!preserveActive) {
@@ -348,7 +352,9 @@ function enhanceCustomSelect(select) {
     const { marquee, clone } = marqueeParts;
     stopMarqueeAnimation(marquee);
     marquee.classList.remove('is-marquee');
-    clone.textContent = '';
+    if (clone.textContent !== '') {
+      clone.textContent = '';
+    }
     marquee.style.removeProperty('--marquee-distance');
     marquee.style.removeProperty('--marquee-duration');
   }
@@ -363,7 +369,10 @@ function enhanceCustomSelect(select) {
       stopOptionMarquee(optionEl);
       return;
     }
-    clone.textContent = primary.textContent;
+    const cloneLabel = primary.textContent || '';
+    if (clone.textContent !== cloneLabel) {
+      clone.textContent = cloneLabel;
+    }
     const gapValue = (() => {
       const style = window.getComputedStyle(marquee);
       const gap = parseFloat(style.columnGap || style.gap || '0');
@@ -475,14 +484,19 @@ function enhanceCustomSelect(select) {
     if (!containerWidth || !textWidth) {
       stopMarqueeAnimation(marquee);
       marquee.classList.remove('is-marquee');
-      cloneText.textContent = '';
+      if (cloneText.textContent !== '') {
+        cloneText.textContent = '';
+      }
       marquee.style.removeProperty('--marquee-distance');
       marquee.style.removeProperty('--marquee-duration');
       return;
     }
     if (textWidth > containerWidth + 2) {
       marquee.classList.add('is-marquee');
-      cloneText.textContent = primaryText.textContent;
+      const primaryLabel = primaryText.textContent || '';
+      if (cloneText.textContent !== primaryLabel) {
+        cloneText.textContent = primaryLabel;
+      }
       const gapValue = (() => {
         const style = window.getComputedStyle(marquee);
         const gap = parseFloat(style.columnGap || style.gap || '0');
@@ -501,7 +515,9 @@ function enhanceCustomSelect(select) {
     } else {
       stopMarqueeAnimation(marquee);
       marquee.classList.remove('is-marquee');
-      cloneText.textContent = '';
+      if (cloneText.textContent !== '') {
+        cloneText.textContent = '';
+      }
       marquee.style.removeProperty('--marquee-distance');
       marquee.style.removeProperty('--marquee-duration');
     }
