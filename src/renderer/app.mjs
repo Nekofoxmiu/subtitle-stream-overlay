@@ -52,6 +52,384 @@ const dom = {
   binStatusFfmpeg: $('#binStatusFfmpegIcon')
 };
 
+const customSelectInstances = new WeakMap();
+
+class CustomSelect {
+  constructor(select) {
+    this.select = select;
+    this.select.tabIndex = -1;
+    this.select.setAttribute('tabindex', '-1');
+    this.triggerId = `${select.id || `select-${Math.random().toString(36).slice(2)}`}-trigger`;
+    this.valueId = `${select.id || `select-${Math.random().toString(36).slice(2)}`}-value`;
+    this.listId = `${select.id || `select-${Math.random().toString(36).slice(2)}`}-listbox`;
+    this.isOpen = false;
+    this.focusedIndex = -1;
+    this.marqueeGap = 36;
+    this.marqueeRaf = null;
+
+    const label = select.id ? document.querySelector(`label[for="${select.id}"]`) : null;
+    if (label && !label.id) {
+      label.id = `${select.id}Label`;
+    }
+    this.labelEl = label || null;
+
+    this.wrapper = document.createElement('div');
+    this.wrapper.className = 'custom-select';
+    if (select.id) {
+      this.wrapper.dataset.selectId = select.id;
+    }
+
+    this.trigger = document.createElement('button');
+    this.trigger.type = 'button';
+    this.trigger.id = this.triggerId;
+    this.trigger.className = 'custom-select__trigger';
+    this.trigger.setAttribute('aria-haspopup', 'listbox');
+    this.trigger.setAttribute('aria-expanded', 'false');
+    this.trigger.setAttribute('aria-controls', this.listId);
+    if (this.labelEl) {
+      this.trigger.setAttribute('aria-labelledby', `${this.labelEl.id} ${this.valueId}`);
+    } else if (this.select.getAttribute('aria-label')) {
+      this.trigger.setAttribute('aria-label', this.select.getAttribute('aria-label'));
+    }
+
+    this.labelWrap = document.createElement('span');
+    this.labelWrap.className = 'custom-select__label';
+
+    this.marqueeTrack = document.createElement('span');
+    this.marqueeTrack.className = 'custom-select__marquee-track';
+    this.marqueeTrack.dataset.paused = 'false';
+
+    this.marqueePrimary = document.createElement('span');
+    this.marqueePrimary.className = 'custom-select__marquee-item';
+    this.marqueePrimary.id = this.valueId;
+
+    this.marqueeClone = document.createElement('span');
+    this.marqueeClone.className = 'custom-select__marquee-item';
+    this.marqueeClone.setAttribute('aria-hidden', 'true');
+    this.marqueeClone.hidden = true;
+
+    this.marqueeTrack.append(this.marqueePrimary, this.marqueeClone);
+    this.labelWrap.append(this.marqueeTrack);
+    this.trigger.append(this.labelWrap);
+
+    this.chevron = document.createElement('span');
+    this.chevron.className = 'custom-select__chevron';
+    this.chevron.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>`;
+    this.trigger.append(this.chevron);
+
+    this.list = document.createElement('div');
+    this.list.id = this.listId;
+    this.list.className = 'custom-select__list';
+    this.list.setAttribute('role', 'listbox');
+    this.list.setAttribute('tabindex', '-1');
+    this.list.setAttribute('aria-hidden', 'true');
+    if (this.labelEl) {
+      this.list.setAttribute('aria-labelledby', this.labelEl.id);
+    }
+
+    this.wrapper.append(this.trigger, this.list);
+    this.select.insertAdjacentElement('afterend', this.wrapper);
+
+    this.handleDocumentPointerDown = this.handleDocumentPointerDown.bind(this);
+    this.handleTriggerClick = this.handleTriggerClick.bind(this);
+    this.handleTriggerKeyDown = this.handleTriggerKeyDown.bind(this);
+    this.handleListKeyDown = this.handleListKeyDown.bind(this);
+    this.handleListClick = this.handleListClick.bind(this);
+    this.handleListFocusOut = this.handleListFocusOut.bind(this);
+    this.handleNativeChange = this.handleNativeChange.bind(this);
+    this.updateMarquee = this.updateMarquee.bind(this);
+
+    this.trigger.addEventListener('click', this.handleTriggerClick);
+    this.trigger.addEventListener('keydown', this.handleTriggerKeyDown);
+    this.trigger.addEventListener('mouseenter', () => this.setMarqueePaused(true));
+    this.trigger.addEventListener('mouseleave', () => this.setMarqueePaused(false));
+
+    this.list.addEventListener('keydown', this.handleListKeyDown);
+    this.list.addEventListener('click', this.handleListClick);
+    this.list.addEventListener('mousedown', (event) => event.preventDefault());
+    this.list.addEventListener('focusout', this.handleListFocusOut);
+
+    this.select.addEventListener('change', this.handleNativeChange);
+
+    this.options = [];
+    this.buildOptions();
+    this.syncFromSelect();
+    this.syncDisabledState();
+
+    if (typeof ResizeObserver === 'function') {
+      this.resizeObserver = new ResizeObserver(() => this.updateMarquee());
+      this.resizeObserver.observe(this.trigger);
+      this.resizeObserver.observe(this.labelWrap);
+      this.resizeObserver.observe(this.marqueePrimary);
+    } else {
+      this.resizeObserver = null;
+      window.addEventListener('resize', this.updateMarquee);
+    }
+
+    this.attributeObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'disabled') {
+          this.syncDisabledState();
+        }
+      }
+    });
+    this.attributeObserver.observe(this.select, { attributes: true, attributeFilter: ['disabled'] });
+  }
+
+  buildOptions() {
+    this.options = [];
+    this.list.innerHTML = '';
+    Array.from(this.select.options).forEach((option, index) => {
+      const optionEl = document.createElement('div');
+      optionEl.className = 'custom-select__option';
+      optionEl.id = `${this.listId}-option-${index}`;
+      optionEl.setAttribute('role', 'option');
+      optionEl.dataset.index = String(index);
+      optionEl.dataset.value = option.value;
+      optionEl.textContent = option.textContent;
+      optionEl.setAttribute('aria-selected', option.selected ? 'true' : 'false');
+      if (option.disabled) {
+        optionEl.setAttribute('aria-disabled', 'true');
+      }
+      this.list.append(optionEl);
+      this.options.push(optionEl);
+    });
+  }
+
+  handleTriggerClick() {
+    if (this.trigger.disabled) return;
+    this.toggle();
+  }
+
+  handleTriggerKeyDown(event) {
+    if (this.trigger.disabled) return;
+    const { key } = event;
+    if (key === 'ArrowDown' || key === 'ArrowUp') {
+      event.preventDefault();
+      if (!this.isOpen) {
+        this.open();
+      }
+      this.focusOptionByOffset(key === 'ArrowDown' ? 1 : -1);
+    } else if (key === 'Enter' || key === ' ' || key === 'Spacebar') {
+      event.preventDefault();
+      this.toggle();
+    } else if (key === 'Escape') {
+      if (this.isOpen) {
+        event.preventDefault();
+        this.close({ restoreFocus: true });
+      }
+    }
+  }
+
+  handleListKeyDown(event) {
+    const { key } = event;
+    if (key === 'ArrowDown' || key === 'ArrowUp') {
+      event.preventDefault();
+      this.focusOptionByOffset(key === 'ArrowDown' ? 1 : -1);
+    } else if (key === 'Home') {
+      event.preventDefault();
+      this.focusOption(0);
+    } else if (key === 'End') {
+      event.preventDefault();
+      this.focusOption(this.options.length - 1);
+    } else if (key === 'Enter' || key === ' ' || key === 'Spacebar') {
+      event.preventDefault();
+      this.selectFocusedOption();
+    } else if (key === 'Escape') {
+      event.preventDefault();
+      this.close({ restoreFocus: true });
+    }
+  }
+
+  handleListClick(event) {
+    const optionEl = event.target.closest('.custom-select__option');
+    if (!optionEl) return;
+    if (optionEl.getAttribute('aria-disabled') === 'true') return;
+    const index = Number.parseInt(optionEl.dataset.index, 10);
+    if (Number.isFinite(index)) {
+      this.focusOption(index);
+      this.selectFocusedOption();
+    }
+  }
+
+  handleListFocusOut(event) {
+    if (!this.isOpen) return;
+    const related = event.relatedTarget;
+    if (related && (related === this.trigger || this.list.contains(related))) {
+      return;
+    }
+    this.close({ restoreFocus: false });
+  }
+
+  handleDocumentPointerDown(event) {
+    if (!this.isOpen) return;
+    if (event.target === this.trigger || this.wrapper.contains(event.target)) return;
+    this.close({ restoreFocus: false });
+  }
+
+  handleNativeChange() {
+    this.syncFromSelect();
+  }
+
+  syncFromSelect() {
+    const selectedIndex = this.select.selectedIndex;
+    if (selectedIndex >= 0 && selectedIndex < this.options.length) {
+      this.options.forEach((optionEl, index) => {
+        const isSelected = index === selectedIndex;
+        optionEl.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        if (!isSelected) optionEl.removeAttribute('data-active');
+      });
+      const selectedOption = this.select.options[selectedIndex];
+      this.marqueePrimary.textContent = selectedOption ? selectedOption.textContent : '';
+      this.marqueeClone.textContent = this.marqueePrimary.textContent;
+      this.focusedIndex = selectedIndex;
+    } else {
+      this.options.forEach((optionEl) => {
+        optionEl.setAttribute('aria-selected', 'false');
+        optionEl.removeAttribute('data-active');
+      });
+      this.marqueePrimary.textContent = '';
+      this.marqueeClone.textContent = '';
+      this.focusedIndex = -1;
+    }
+    this.updateMarquee();
+  }
+
+  syncDisabledState() {
+    this.trigger.disabled = this.select.disabled;
+  }
+
+  setMarqueePaused(paused) {
+    this.marqueeTrack.dataset.paused = paused ? 'true' : 'false';
+  }
+
+  updateMarquee() {
+    if (this.marqueeRaf) {
+      cancelAnimationFrame(this.marqueeRaf);
+      this.marqueeRaf = null;
+    }
+    this.marqueeRaf = requestAnimationFrame(() => {
+      const wrapWidth = this.labelWrap.clientWidth || 0;
+      const textWidth = this.marqueePrimary.scrollWidth || 0;
+      if (!wrapWidth || textWidth <= wrapWidth + 1) {
+        this.marqueeTrack.classList.remove('is-marquee');
+        this.marqueeTrack.style.removeProperty('--marquee-shift');
+        this.marqueeTrack.style.removeProperty('--marquee-duration');
+        this.marqueeClone.hidden = true;
+        this.marqueeTrack.style.transform = 'translateX(0)';
+      } else {
+        const travel = textWidth + this.marqueeGap;
+        const duration = Math.max(6, travel / 28);
+        this.marqueeTrack.classList.add('is-marquee');
+        this.marqueeTrack.style.removeProperty('transform');
+        this.marqueeTrack.style.setProperty('--marquee-shift', `${travel}px`);
+        this.marqueeTrack.style.setProperty('--marquee-duration', `${duration}s`);
+        this.marqueeClone.hidden = false;
+      }
+    });
+  }
+
+  focusOption(index) {
+    if (!Number.isFinite(index)) return;
+    const normalized = Math.max(0, Math.min(index, this.options.length - 1));
+    const optionEl = this.options[normalized];
+    if (!optionEl || optionEl.getAttribute('aria-disabled') === 'true') return;
+    this.focusedIndex = normalized;
+    this.list.setAttribute('aria-activedescendant', optionEl.id);
+    this.options.forEach((el) => {
+      if (el !== optionEl) el.removeAttribute('data-active');
+    });
+    optionEl.setAttribute('data-active', 'true');
+    optionEl.scrollIntoView({ block: 'nearest' });
+  }
+
+  focusOptionByOffset(offset) {
+    if (!Number.isFinite(offset) || this.options.length === 0) return;
+    let index = this.focusedIndex;
+    const start = Number.isFinite(index) && index >= 0 ? index : this.select.selectedIndex;
+    index = Number.isFinite(start) && start >= 0 ? start : 0;
+    let nextIndex = index;
+    const direction = offset > 0 ? 1 : -1;
+    do {
+      nextIndex += direction;
+    } while (
+      nextIndex >= 0 &&
+      nextIndex < this.options.length &&
+      this.options[nextIndex]?.getAttribute('aria-disabled') === 'true'
+    );
+    if (nextIndex < 0 || nextIndex >= this.options.length) return;
+    this.focusOption(nextIndex);
+  }
+
+  selectFocusedOption() {
+    if (this.focusedIndex < 0 || this.focusedIndex >= this.options.length) return;
+    const optionEl = this.options[this.focusedIndex];
+    if (!optionEl || optionEl.getAttribute('aria-disabled') === 'true') return;
+    const value = optionEl.dataset.value;
+    if (this.select.value !== value) {
+      this.select.value = value;
+      const changeEvent = new Event('change', { bubbles: true });
+      this.select.dispatchEvent(changeEvent);
+    } else {
+      this.syncFromSelect();
+    }
+    this.close({ restoreFocus: true });
+  }
+
+  open() {
+    if (this.isOpen || this.trigger.disabled) return;
+    this.isOpen = true;
+    this.list.setAttribute('aria-hidden', 'false');
+    this.trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', this.handleDocumentPointerDown, true);
+    requestAnimationFrame(() => {
+      this.list.focus();
+      const selectedIndex = this.select.selectedIndex;
+      if (selectedIndex >= 0) {
+        this.focusOption(selectedIndex);
+      } else if (this.options.length) {
+        this.focusOption(0);
+      }
+    });
+  }
+
+  close({ restoreFocus } = { restoreFocus: false }) {
+    if (!this.isOpen) return;
+    this.isOpen = false;
+    this.list.setAttribute('aria-hidden', 'true');
+    this.list.removeAttribute('aria-activedescendant');
+    this.options.forEach((el) => el.removeAttribute('data-active'));
+    this.trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', this.handleDocumentPointerDown, true);
+    if (restoreFocus) {
+      this.trigger.focus();
+    }
+  }
+
+  toggle() {
+    if (this.isOpen) {
+      this.close({ restoreFocus: false });
+    } else {
+      this.open();
+    }
+  }
+}
+
+function initCustomSelects(root = document) {
+  const selects = root.querySelectorAll('select[data-custom-select="true"]');
+  selects.forEach((select) => {
+    if (customSelectInstances.has(select)) return;
+    const instance = new CustomSelect(select);
+    customSelectInstances.set(select, instance);
+    select._customSelectInstance = instance;
+  });
+}
+
+function refreshCustomSelect(select) {
+  const instance = customSelectInstances.get(select ?? null);
+  if (instance) instance.syncFromSelect();
+}
+
 const videoCacheControls = createCacheSelector(dom.videoFile?.closest('.row'), {
   searchPlaceholder: '搜尋影片或音訊...'
 });
@@ -95,6 +473,8 @@ const state = {
   subtitleOffsetOverrides: {},
   overlayRefreshSeq: 0
 };
+
+initCustomSelects();
 
 const ALIGN_OPTIONS = new Set([
   'top-left',
@@ -777,8 +1157,10 @@ async function loadInitialConfig() {
   if (output.maxHeight != null) dom.maxHeight.value = String(output.maxHeight);
   if (dom.align) {
     dom.align.value = normalizeAlignValue(output.align ?? dom.align.value);
+    refreshCustomSelect(dom.align);
   }
   if (output.background) dom.background.value = output.background;
+  if (dom.background) refreshCustomSelect(dom.background);
   const defaultModeRaw = output?.subtitleOffsetDefaults?.mode ?? output.subtitleOffsetMode;
   const defaultSecondsRaw = output?.subtitleOffsetDefaults?.seconds ?? output.subtitleOffsetSeconds;
   state.subtitleOffsetDefaults = {

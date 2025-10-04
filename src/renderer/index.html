@@ -519,6 +519,165 @@
       }
     }
 
+    .native-select[data-custom-select="true"] {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0 0 0 0) !important;
+      clip-path: inset(50%) !important;
+      border: 0 !important;
+      white-space: nowrap !important;
+    }
+
+    .row .custom-select {
+      flex: 1 1 auto;
+      min-width: 180px;
+    }
+
+    .custom-select {
+      position: relative;
+      display: inline-flex;
+      width: 100%;
+    }
+
+    .custom-select__trigger {
+      appearance: none;
+      border: 1px solid rgba(148, 163, 184, 0.55);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.85);
+      color: var(--text-primary);
+      font: inherit;
+      padding: 10px 44px 10px 16px;
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      cursor: pointer;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+      text-align: left;
+    }
+
+    .custom-select__trigger:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .custom-select__trigger:focus-visible {
+      outline: none;
+      border-color: rgba(37, 99, 235, 0.75);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+    }
+
+    .custom-select__trigger[aria-expanded="true"] {
+      background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(124, 58, 237, 0.12));
+    }
+
+    .custom-select__label {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+    }
+
+    .custom-select__marquee-track {
+      display: flex;
+      align-items: center;
+      gap: 36px;
+      transform: translateX(var(--marquee-offset, 0));
+      will-change: transform;
+    }
+
+    .custom-select__marquee-track.is-marquee {
+      animation: custom-select-marquee var(--marquee-duration, 10s) linear infinite;
+    }
+
+    .custom-select__marquee-track[data-paused="true"] {
+      animation-play-state: paused;
+    }
+
+    .custom-select__marquee-item {
+      display: inline-flex;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .custom-select__chevron {
+      position: absolute;
+      right: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      pointer-events: none;
+      display: inline-flex;
+      color: #1f2937;
+    }
+
+    .custom-select__list {
+      position: absolute;
+      inset: auto 0 0 0;
+      transform: translateY(calc(100% + 6px));
+      background: #fff;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.55);
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 240px;
+      overflow: auto;
+      z-index: 20;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.15s ease, visibility 0.15s ease;
+    }
+
+    .custom-select__list[aria-hidden="false"] {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .custom-select__option {
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-weight: 500;
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: background-color 0.15s ease, color 0.15s ease;
+    }
+
+    .custom-select__option[aria-selected="true"] {
+      background: rgba(37, 99, 235, 0.12);
+      color: #1d4ed8;
+    }
+
+    .custom-select__option[data-active="true"] {
+      background: rgba(37, 99, 235, 0.18);
+      color: #1d4ed8;
+    }
+
+    .custom-select__option[aria-disabled="true"] {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .custom-select__option:focus-visible {
+      outline: none;
+    }
+
+    @keyframes custom-select-marquee {
+      0% {
+        transform: translateX(0);
+      }
+      100% {
+        transform: translateX(calc(-1 * var(--marquee-shift, 0px)));
+      }
+    }
+
 
     #videoFile {
       display: none;
@@ -1207,8 +1366,8 @@
             <input type="number" id="maxHeight" value="1080" min="180">
           </div>
           <div class="row">
-            <label for="align">強制對齊</label>
-            <select id="align">
+            <label id="alignLabel" for="align">強制對齊</label>
+            <select id="align" class="native-select" data-custom-select="true" aria-hidden="true">
               <option value="off" selected>關閉</option>
               <option value="top-left">左上</option>
               <option value="top-center">中上</option>
@@ -1222,8 +1381,8 @@
             </select>
           </div>
           <div class="row">
-            <label for="background">背景</label>
-            <select id="background">
+            <label id="backgroundLabel" for="background">背景</label>
+            <select id="background" class="native-select" data-custom-select="true" aria-hidden="true">
               <option value="transparent" selected>透明</option>
               <option value="green">綠幕</option>
             </select>
