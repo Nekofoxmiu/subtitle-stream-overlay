@@ -373,6 +373,28 @@
       flex-wrap: wrap;
     }
 
+    .row.cache-row {
+      flex-wrap: nowrap;
+      align-items: stretch;
+      overflow-x: auto;
+    }
+
+    .row.cache-row input[type="search"] {
+      flex: 1 1 260px;
+      min-width: 0;
+    }
+
+    .row.cache-row .custom-select,
+    .custom-select.cache-row__select {
+      flex: 0 0 320px;
+      min-width: 0;
+    }
+
+    .row.cache-row small {
+      flex-basis: 100%;
+      margin-top: 6px;
+    }
+
     .row label {
       font-weight: 600;
       min-width: 120px;
@@ -513,11 +535,12 @@
       display: inline-flex;
       align-items: center;
       gap: 12px;
-      justify-content: space-between;
+      justify-content: flex-start;
       cursor: pointer;
       transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
       position: relative;
       min-height: 44px;
+      text-align: left;
     }
 
     .custom-select__trigger:focus-visible {
@@ -542,6 +565,7 @@
       min-width: 0;
       display: block;
       overflow: hidden;
+      text-align: left;
     }
 
     .custom-select__marquee {
@@ -625,6 +649,8 @@
       cursor: pointer;
       color: var(--text-primary);
       transition: background 0.14s ease, color 0.14s ease;
+      text-align: left;
+      white-space: nowrap;
     }
 
     .custom-select__option.is-active {
@@ -652,6 +678,40 @@
     .custom-select.is-remote-disabled .custom-select__trigger {
       opacity: 1 !important;
       background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(124, 58, 237, 0.12)) !important;
+    }
+
+    .sidebar .custom-select__trigger {
+      background: rgba(15, 23, 42, 0.82);
+      border-color: rgba(148, 163, 184, 0.4);
+      color: #e2e8f0;
+    }
+
+    .sidebar .custom-select.is-open .custom-select__trigger {
+      background: rgba(37, 99, 235, 0.2);
+      border-color: rgba(96, 165, 250, 0.55);
+      color: #ffffff;
+    }
+
+    .sidebar .custom-select__icon {
+      color: #e2e8f0;
+    }
+
+    .sidebar .custom-select__list {
+      background: rgba(15, 23, 42, 0.95);
+      border-color: rgba(148, 163, 184, 0.35);
+      box-shadow: 0 18px 40px rgba(2, 6, 23, 0.55);
+    }
+
+    .sidebar .custom-select__option {
+      color: #e2e8f0;
+    }
+
+    .sidebar .custom-select__option.is-active {
+      background: rgba(37, 99, 235, 0.3);
+    }
+
+    .sidebar .custom-select__option[aria-selected="true"]::after {
+      color: rgba(96, 165, 250, 0.9);
     }
 
     @keyframes custom-select-marquee {
