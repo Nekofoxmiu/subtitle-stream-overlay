@@ -20,15 +20,13 @@ const dom = {
   videoFile: $('#videoFile'),
   pickVideo: $('#pickVideo'),
   useRemoteTimelineToggle: $('#useRemoteTimelineToggle'),
-  remotePlayer: $('#remotePlayer'),
-  remotePlayerCover: $('#remotePlayerCover'),
-  remotePlayerCoverFallback: $('#remotePlayerCoverFallback'),
-  remotePlayerTitle: $('#remotePlayerTitle'),
-  remotePlayerSubtitle: $('#remotePlayerSubtitle'),
-  remotePlayerStatus: $('#remotePlayerStatus'),
-  remotePlayerCurrent: $('#remotePlayerCurrent'),
-  remotePlayerDuration: $('#remotePlayerDuration'),
-  remotePlayerProgressFill: $('#remotePlayerProgressFill'),
+  remoteHud: $('#remoteHud'),
+  remoteHudTitle: $('#remoteHudTitle'),
+  remoteHudSubtitle: $('#remoteHudSubtitle'),
+  remoteHudStatus: $('#remoteHudStatus'),
+  remoteHudCurrent: $('#remoteHudCurrent'),
+  remoteHudDuration: $('#remoteHudDuration'),
+  remoteHudProgressFill: $('#remoteHudProgressFill'),
   ytUrl: $('#ytUrl'),
   fontsPicked: $('#fontsPicked'),
   pickCookies: $('#pickCookies'),
@@ -100,6 +98,10 @@ const state = {
   remoteLastUpdate: 0,
   remoteMediaKey: '',
   remoteProgressTimer: null,
+  remoteCoverObjectUrl: '',
+  remoteCoverSource: '',
+  remoteCoverAbort: null,
+  remoteCoverToken: 0,
   subtitleOffsetMode: 'advance',
   subtitleOffsetSeconds: 0,
   subtitleOffsetDefaults: { mode: 'advance', seconds: 0 },
@@ -345,20 +347,11 @@ function handleRemoteNowPlaying(raw) {
 
 function applyRemoteTimeline(payload) {
   if (!payload) return;
-  const video = dom.video;
-  if (video && video.readyState >= 1) {
-    if (Number.isFinite(payload.progressSeconds)) {
-      const current = Number(video.currentTime || 0);
-      if (!Number.isFinite(current) || Math.abs(current - payload.progressSeconds) > REMOTE_TIME_EPSILON) {
-        try { video.currentTime = payload.progressSeconds; } catch { /* noop */ }
-      }
-    }
-    if (payload.status === 'playing') {
-      video.play().catch(() => { /* ignore autoplay errors */ });
-    } else if (payload.status === 'paused' || payload.status === 'stopped') {
-      try { video.pause(); } catch { /* noop */ }
-    }
-  }
+  if (!dom.video) return;
+  const status = String(payload.status || '').toLowerCase();
+  dom.video.dataset.remoteStatus = status || 'unknown';
+  dom.video.classList.toggle('is-remote-playing', status === 'playing');
+  dom.video.classList.toggle('is-remote-paused', status === 'paused');
 }
 
 
@@ -367,26 +360,26 @@ function updateRemotePlayerVisibility() {
   if (dom.previewArea) {
     dom.previewArea.classList.toggle('remote-active', usingRemote);
   }
-  if (dom.remotePlayer) {
-    dom.remotePlayer.hidden = !usingRemote;
-    dom.remotePlayer.setAttribute('aria-hidden', usingRemote ? 'false' : 'true');
+  if (dom.remoteHud) {
+    dom.remoteHud.hidden = !usingRemote;
+    dom.remoteHud.setAttribute('aria-hidden', usingRemote ? 'false' : 'true');
   }
   if (dom.video) {
-    dom.video.controls = !usingRemote;
-    dom.video.classList.toggle('remote-disabled', usingRemote);
+    dom.video.classList.toggle('remote-mock', usingRemote);
+    dom.video.style.pointerEvents = usingRemote ? 'none' : '';
     if (usingRemote) {
-      dom.video.setAttribute('aria-hidden', 'true');
-      dom.video.setAttribute('tabindex', '-1');
-      dom.video.style.pointerEvents = 'none';
+      dom.video.removeAttribute('controls');
+      dom.video.controls = false;
+      dom.video.setAttribute('data-remote-active', 'true');
       try { dom.video.pause(); } catch { /* noop */ }
     } else {
-      dom.video.removeAttribute('aria-hidden');
-      dom.video.removeAttribute('tabindex');
-      dom.video.style.pointerEvents = '';
-      if (dom.video.dataset.remotePoster === 'true') {
-        dom.video.removeAttribute('poster');
-        delete dom.video.dataset.remotePoster;
-      }
+      dom.video.setAttribute('controls', '');
+      dom.video.controls = true;
+      dom.video.removeAttribute('data-remote-active');
+      dom.video.removeAttribute('data-remote-status');
+      delete dom.video.dataset.remoteStatus;
+      dom.video.classList.remove('is-remote-playing', 'is-remote-paused');
+      clearRemoteCover();
     }
   }
 }
@@ -426,24 +419,24 @@ function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
 }
 
 function updateRemoteProgressDisplay(info = state.remoteNowPlaying) {
-  if (!dom.remotePlayerCurrent || !dom.remotePlayerDuration || !dom.remotePlayerProgressFill) return;
+  if (!dom.remoteHudCurrent || !dom.remoteHudDuration || !dom.remoteHudProgressFill) return;
   const { progress, duration } = getRemoteProgressEstimate(info);
   const currentText = progress != null ? formatClockTime(progress) : '0:00';
-  dom.remotePlayerCurrent.textContent = currentText;
+  dom.remoteHudCurrent.textContent = currentText;
   const isLive = info?.isLive === true;
   if (isLive) {
-    dom.remotePlayerDuration.textContent = 'LIVE';
-    dom.remotePlayerDuration.classList.add('is-live');
+    dom.remoteHudDuration.textContent = 'LIVE';
+    dom.remoteHudDuration.classList.add('is-live');
   } else {
-    dom.remotePlayerDuration.classList.remove('is-live');
-    dom.remotePlayerDuration.textContent = (duration != null && duration > 0)
+    dom.remoteHudDuration.classList.remove('is-live');
+    dom.remoteHudDuration.textContent = (duration != null && duration > 0)
       ? formatClockTime(duration)
       : '--:--';
   }
   const ratio = (progress != null && duration != null && duration > 0)
     ? Math.min(1, Math.max(0, progress / duration))
     : 0;
-  dom.remotePlayerProgressFill.style.width = `${(ratio * 100).toFixed(2)}%`;
+  dom.remoteHudProgressFill.style.width = `${(ratio * 100).toFixed(2)}%`;
 }
 
 function getRemoteStatusLabel(info = state.remoteNowPlaying) {
@@ -457,7 +450,7 @@ function getRemoteStatusLabel(info = state.remoteNowPlaying) {
 }
 
 function updateRemotePlayerUi(info = state.remoteNowPlaying) {
-  if (!dom.remotePlayer) return;
+  if (!dom.remoteHud) return;
   const remote = info && typeof info === 'object' ? info : null;
   const hasRemote = Boolean(remote);
   const title = remote?.title || '外部時間軸';
@@ -466,45 +459,22 @@ function updateRemotePlayerUi(info = state.remoteNowPlaying) {
     : '';
   const platform = remote?.platform ? `@${remote.platform}` : '';
   const subtitleParts = [artists, platform].filter(Boolean);
-  if (dom.remotePlayerTitle) dom.remotePlayerTitle.textContent = title;
-  if (dom.remotePlayerSubtitle) {
-    dom.remotePlayerSubtitle.textContent = subtitleParts.length
+  if (dom.remoteHudTitle) dom.remoteHudTitle.textContent = title;
+  if (dom.remoteHudSubtitle) {
+    dom.remoteHudSubtitle.textContent = subtitleParts.length
       ? subtitleParts.join(' · ')
       : (hasRemote ? '外部時間軸已啟用' : '等待外部播放資訊...');
   }
-  if (dom.remotePlayerStatus) dom.remotePlayerStatus.textContent = getRemoteStatusLabel(remote);
+  if (dom.remoteHudStatus) dom.remoteHudStatus.textContent = getRemoteStatusLabel(remote);
 
-  const coverUrl = typeof remote?.cover === 'string' ? remote.cover : '';
-  if (dom.remotePlayerCover) {
-    if (coverUrl) {
-      dom.remotePlayerCover.src = coverUrl;
-      dom.remotePlayerCover.alt = title ? `${title} 封面` : '播放封面';
-      dom.remotePlayerCover.hidden = false;
-    } else {
-      dom.remotePlayerCover.hidden = true;
-      dom.remotePlayerCover.removeAttribute('src');
-      dom.remotePlayerCover.removeAttribute('alt');
-    }
-  }
-  if (dom.video) {
-    if (state.useRemoteTimeline && coverUrl) {
-      dom.video.poster = coverUrl;
-      dom.video.dataset.remotePoster = 'true';
-    } else if (dom.video.dataset.remotePoster === 'true') {
-      dom.video.removeAttribute('poster');
-      delete dom.video.dataset.remotePoster;
-    }
-  }
-  if (dom.remotePlayerCoverFallback) {
-    const fallbackChar = remote?.title?.trim()?.[0] || '♪';
-    dom.remotePlayerCoverFallback.textContent = fallbackChar;
-    dom.remotePlayerCoverFallback.hidden = Boolean(coverUrl);
+  if (state.useRemoteTimeline) {
+    applyRemoteCoverImage(remote?.cover || '');
   }
 
   const status = String(remote?.status || '').toLowerCase();
-  dom.remotePlayer.classList.toggle('is-playing', status === 'playing');
-  dom.remotePlayer.classList.toggle('is-paused', status === 'paused');
-  dom.remotePlayer.classList.toggle('is-stopped', !status || status === 'stopped');
+  dom.remoteHud.classList.toggle('is-playing', status === 'playing');
+  dom.remoteHud.classList.toggle('is-paused', status === 'paused');
+  dom.remoteHud.classList.toggle('is-stopped', !status || status === 'stopped');
 
   updateRemoteProgressDisplay(remote);
 }
@@ -525,6 +495,77 @@ function stopRemoteProgressTimer() {
   if (state.remoteProgressTimer != null) {
     window.clearInterval(state.remoteProgressTimer);
     state.remoteProgressTimer = null;
+  }
+}
+
+function revokeRemoteCoverObjectUrl() {
+  if (state.remoteCoverObjectUrl) {
+    try { URL.revokeObjectURL(state.remoteCoverObjectUrl); } catch { /* noop */ }
+    state.remoteCoverObjectUrl = '';
+  }
+}
+
+function clearRemoteCover() {
+  if (!dom.video) return;
+  if (state.remoteCoverAbort) {
+    try { state.remoteCoverAbort.abort(); } catch { /* noop */ }
+    state.remoteCoverAbort = null;
+  }
+  state.remoteCoverToken += 1;
+  revokeRemoteCoverObjectUrl();
+  state.remoteCoverSource = '';
+  dom.video.style.removeProperty('--remote-cover-image');
+  dom.video.removeAttribute('data-remote-cover');
+  dom.video.removeAttribute('poster');
+}
+
+async function applyRemoteCoverImage(rawUrl) {
+  const video = dom.video;
+  if (!video) return;
+  const url = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+  if (!url) {
+    clearRemoteCover();
+    return;
+  }
+  if (state.remoteCoverSource === url) return;
+  state.remoteCoverSource = url;
+  state.remoteCoverToken += 1;
+  const token = state.remoteCoverToken;
+  if (state.remoteCoverAbort) {
+    try { state.remoteCoverAbort.abort(); } catch { /* noop */ }
+  }
+  const controller = new AbortController();
+  state.remoteCoverAbort = controller;
+  try {
+    const response = await fetch(url, {
+      mode: 'cors',
+      credentials: 'omit',
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    if (!/^image\//i.test(blob.type || '')) throw new Error('非圖片資源');
+    const objectUrl = URL.createObjectURL(blob);
+    if (state.remoteCoverToken !== token) {
+      try { URL.revokeObjectURL(objectUrl); } catch { /* noop */ }
+      return;
+    }
+    revokeRemoteCoverObjectUrl();
+    state.remoteCoverObjectUrl = objectUrl;
+    video.style.setProperty('--remote-cover-image', `url("${objectUrl}")`);
+    video.setAttribute('data-remote-cover', 'object');
+    video.poster = objectUrl;
+  } catch (err) {
+    if (state.remoteCoverToken !== token) return;
+    console.warn('[remote] 無法透過 fetch 載入封面，改用原網址', err);
+    revokeRemoteCoverObjectUrl();
+    video.style.setProperty('--remote-cover-image', `url("${url.replace(/"/g, '\\"')}")`);
+    video.setAttribute('data-remote-cover', 'direct');
+    video.poster = url;
+  } finally {
+    if (state.remoteCoverToken === token) {
+      state.remoteCoverAbort = null;
+    }
   }
 }
 
@@ -2379,4 +2420,12 @@ async function buildFilePayload(file) {
     return null;
   }
 }
+
+window.addEventListener('beforeunload', () => {
+  if (state.remoteCoverAbort) {
+    try { state.remoteCoverAbort.abort(); } catch { /* noop */ }
+    state.remoteCoverAbort = null;
+  }
+  revokeRemoteCoverObjectUrl();
+});
 
