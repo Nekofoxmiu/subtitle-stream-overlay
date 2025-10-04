@@ -638,6 +638,13 @@
       transition: opacity 0.16s ease, transform 0.16s ease;
     }
 
+    .custom-select--dropup .custom-select__list {
+      top: auto;
+      bottom: calc(100% + 6px);
+      transform: translateY(4px);
+      box-shadow: 0 -18px 40px rgba(15, 23, 42, 0.18);
+    }
+
     .custom-select.is-open .custom-select__list {
       opacity: 1;
       visibility: visible;
