@@ -18,6 +18,7 @@ const dom = {
   video: $('#localVideo'),
   videoFile: $('#videoFile'),
   pickVideo: $('#pickVideo'),
+  useRemoteTimelineToggle: $('#useRemoteTimelineToggle'),
   ytUrl: $('#ytUrl'),
   fontsPicked: $('#fontsPicked'),
   pickCookies: $('#pickCookies'),
@@ -83,6 +84,11 @@ const state = {
   downloadProgressStarted: false,
   downloadStatusMessage: '',
   playerVolume: 1,
+  useRemoteTimeline: false,
+  remoteNowPlaying: null,
+  remoteLastGuid: '',
+  remoteLastUpdate: 0,
+  remoteMediaKey: '',
   subtitleOffsetMode: 'advance',
   subtitleOffsetSeconds: 0,
   subtitleOffsetDefaults: { mode: 'advance', seconds: 0 },
@@ -134,17 +140,26 @@ function normalizeDimension(raw, fallback) {
   return parsed;
 }
 
-const persistVolumeSetting = debounce((volume) => {
+function persistPlayerConfig({ volume = state.playerVolume, useRemoteTimeline = state.useRemoteTimeline } = {}) {
   if (!window?.api?.setConfig) return;
+  const payload = {
+    volume: clampVolume(volume),
+    useRemoteTimeline: Boolean(useRemoteTimeline)
+  };
   try {
-    Promise.resolve(window.api.setConfig({ player: { volume } })).catch((err) => {
-      console.error('[config] 無法儲存音量', err);
+    Promise.resolve(window.api.setConfig({ player: payload })).catch((err) => {
+      console.error('[config] failed to save player config', err);
     });
   } catch (err) {
-    console.error('[config] 無法儲存音量', err);
+    console.error('[config] failed to save player config', err);
   }
-}, 240);
+}
 
+const persistVolumeSetting = debounce((volume) => {
+  const normalized = clampVolume(volume);
+  state.playerVolume = normalized;
+  persistPlayerConfig({ volume: normalized });
+}, 240);
 /* ---------------- Overlay 時間同步 ---------------- */
 class OverlaySync {
   constructor(videoEl) {
@@ -152,22 +167,83 @@ class OverlaySync {
     this.timer = null;
     this.port = 59837;
     this.video = videoEl;
+    this.pendingTime = null;
+    this.nowPlayingHandler = null;
+
+    this.handleWsOpen = this.handleWsOpen.bind(this);
+    this.handleWsClose = this.handleWsClose.bind(this);
+    this.handleWsError = this.handleWsError.bind(this);
+    this.handleWsMessage = this.handleWsMessage.bind(this);
+  }
+  setNowPlayingHandler(handler) {
+    this.nowPlayingHandler = typeof handler === 'function' ? handler : null;
   }
   connect(port) {
-    if (this.port === port && this.ws && this.ws.readyState === 1) return;
-    this.port = port;
-    if (this.ws) {
+    const parsed = Number.parseInt(port, 10);
+    const targetPort = Number.isFinite(parsed) && parsed > 0 ? parsed : this.port;
+    const samePort = this.ws?.url ? this.ws.url.endsWith(`:${targetPort}`) : false;
+    if (this.ws && samePort) {
+      const ready = this.ws.readyState;
+      if (ready === 1 || ready === 0) {
+        this.port = targetPort;
+        return;
+      }
+      this.detachWs(this.ws);
+      try { this.ws.close(); } catch { /* noop */ }
+    } else if (this.ws) {
+      this.detachWs(this.ws);
       try { this.ws.close(); } catch { /* noop */ }
     }
-    this.ws = new WebSocket(`ws://localhost:${port}`);
+    this.port = targetPort;
+    const ws = new WebSocket(`ws://localhost:${targetPort}`);
+    this.ws = ws;
+    this.attachWs(ws);
+  }
+  attachWs(ws) {
+    ws.addEventListener('open', this.handleWsOpen);
+    ws.addEventListener('close', this.handleWsClose);
+    ws.addEventListener('error', this.handleWsError);
+    ws.addEventListener('message', this.handleWsMessage);
+  }
+  detachWs(ws) {
+    ws.removeEventListener('open', this.handleWsOpen);
+    ws.removeEventListener('close', this.handleWsClose);
+    ws.removeEventListener('error', this.handleWsError);
+    ws.removeEventListener('message', this.handleWsMessage);
+  }
+  handleWsOpen() {
+    if (this.pendingTime != null) {
+      const time = this.pendingTime;
+      this.pendingTime = null;
+      this.sendTime(time);
+    }
+  }
+  handleWsClose(event) {
+    if (event?.target) this.detachWs(event.target);
+    if (event?.target === this.ws) {
+      this.ws = null;
+    }
+  }
+  handleWsError() {
+    // suppress connection errors to keep renderer logs quiet
+  }
+  handleWsMessage(event) {
+    if (!this.nowPlayingHandler || !event?.data) return;
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (!data || typeof data !== 'object') return;
+    if (data.type === 'nowPlaying' && data.payload) {
+      this.nowPlayingHandler(data.payload);
+    } else if (!data.type && looksLikeNowPlayingPayload(data)) {
+      this.nowPlayingHandler(data);
+    }
   }
   start() {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      if (!this.ws || this.ws.readyState !== 1) return;
-      const t = Number(this.video.currentTime || 0);
+      const t = Number(this.video?.currentTime || 0);
       if (!Number.isFinite(t)) return;
-      this.ws.send(JSON.stringify({ type: 'setTime', payload: { t } }));
+      this.sendTime(t);
     }, 33);
   }
   stop() {
@@ -175,10 +251,130 @@ class OverlaySync {
     clearInterval(this.timer);
     this.timer = null;
   }
+  sendTime(time) {
+    if (typeof time !== 'number' || !Number.isFinite(time)) return;
+    const ws = this.ws;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'setTime', payload: { t: time } }));
+    } else {
+      this.pendingTime = time;
+    }
+  }
 }
 
 const overlaySync = new OverlaySync(dom.video);
+overlaySync.setNowPlayingHandler(handleRemoteNowPlaying);
+const REMOTE_TIME_EPSILON = 0.25;
 
+function looksLikeNowPlayingPayload(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  if (typeof raw.progress === 'number' || typeof raw.progressMs === 'number') return true;
+  if (typeof raw.duration === 'number' || typeof raw.durationMs === 'number') return true;
+  if (typeof raw.guid === 'string' && raw.guid) return true;
+  if (typeof raw.title === 'string' && raw.title) return true;
+  return false;
+}
+
+function normalizeNowPlayingPayload(raw) {
+  if (!looksLikeNowPlayingPayload(raw)) return null;
+  const toPositiveNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) && num >= 0 ? num : 0;
+  };
+  const progressMs = toPositiveNumber(raw.progress ?? raw.progressMs);
+  const durationMs = toPositiveNumber(raw.duration ?? raw.durationMs);
+  const clampedProgress = durationMs > 0 ? Math.min(progressMs, durationMs) : progressMs;
+  const normalizeStr = (value) => (typeof value === 'string' ? value.trim() : '');
+  const status = normalizeStr(raw.status).toLowerCase() || 'unknown';
+  const artists = Array.isArray(raw.artists)
+    ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
+    : [];
+  return {
+    guid: normalizeStr(raw.guid),
+    cover: normalizeStr(raw.cover),
+    title: normalizeStr(raw.title),
+    artists,
+    status,
+    progressMs: clampedProgress,
+    progressSeconds: clampedProgress / 1000,
+    durationMs,
+    durationSeconds: durationMs / 1000,
+    songLink: normalizeStr(raw.song_link),
+    platform: normalizeStr(raw.platform),
+    isLive: raw.is_live === true,
+    receivedAt: Date.now()
+  };
+}
+
+function handleRemoteNowPlaying(raw) {
+  const payload = normalizeNowPlayingPayload(raw);
+  if (!payload) return;
+  state.remoteNowPlaying = payload;
+  if (payload.guid) state.remoteLastGuid = payload.guid;
+  state.remoteLastUpdate = payload.receivedAt;
+  const derivedKey = getRemoteMediaKey(payload) || '';
+  const previousKey = state.remoteMediaKey || '';
+  if (derivedKey) state.remoteMediaKey = derivedKey;
+  if (state.useRemoteTimeline) {
+    const keyChanged = derivedKey && derivedKey !== previousKey;
+    applyRemoteTimeline(payload);
+    if (keyChanged && state.activeSubsId) {
+      applySubtitleOffsetForSelection({ subsId: state.activeSubsId, notify: true });
+    }
+  }
+  updateActiveCacheInfo();
+}
+
+function applyRemoteTimeline(payload) {
+  if (!payload) return;
+  const video = dom.video;
+  if (video && video.readyState >= 1) {
+    if (Number.isFinite(payload.progressSeconds)) {
+      const current = Number(video.currentTime || 0);
+      if (!Number.isFinite(current) || Math.abs(current - payload.progressSeconds) > REMOTE_TIME_EPSILON) {
+        try { video.currentTime = payload.progressSeconds; } catch { /* noop */ }
+      }
+    }
+    if (payload.status === 'playing') {
+      video.play().catch(() => { /* ignore autoplay errors */ });
+    } else if (payload.status === 'paused' || payload.status === 'stopped') {
+      try { video.pause(); } catch { /* noop */ }
+    }
+  }
+}
+
+
+function updateRemoteToggleUI() {
+  if (!dom.useRemoteTimelineToggle) return;
+  dom.useRemoteTimelineToggle.checked = Boolean(state.useRemoteTimeline);
+  dom.useRemoteTimelineToggle.setAttribute('aria-checked', state.useRemoteTimeline ? 'true' : 'false');
+}
+
+function setRemoteTimelineEnabled(enabled, { persist = false } = {}) {
+  state.useRemoteTimeline = Boolean(enabled);
+  state.remoteMediaKey = state.useRemoteTimeline ? (getRemoteMediaKey() || state.remoteMediaKey || '') : '';
+  updateRemoteToggleUI();
+  overlaySync.connect(getCurrentPort());
+  if (state.useRemoteTimeline) {
+    overlaySync.stop();
+    if (state.remoteNowPlaying) applyRemoteTimeline(state.remoteNowPlaying);
+  } else {
+    overlaySync.start();
+  }
+  if (persist) {
+    persistPlayerConfig();
+  }
+  updateActiveCacheInfo();
+  const canApplyOffset = state.activeSubsId && (!state.useRemoteTimeline || state.remoteMediaKey);
+  if (canApplyOffset) {
+    applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
+  }
+}
+
+function handleRemoteTimelineToggle(event) {
+  const next = event?.target?.checked === true;
+  setRemoteTimelineEnabled(next, { persist: true });
+}
 function setVideoPlaceholder(active) {
   if (!dom.video) return;
   dom.video.classList.toggle('placeholder', Boolean(active));
@@ -354,8 +550,42 @@ function offsetsEqual(a, b) {
   return modeA === modeB && Math.abs(secondsA - secondsB) <= OFFSET_EPSILON;
 }
 
+function getRemoteMediaKey(remote = state.remoteNowPlaying) {
+  if (!state.useRemoteTimeline) return '';
+  if (!remote || typeof remote !== 'object') return '';
+  const link = typeof remote.songLink === 'string' ? remote.songLink.trim() : '';
+  if (link) return `remote:song:${link}`;
+  const guid = typeof remote.guid === 'string' ? remote.guid.trim() : '';
+  if (guid) return `remote:guid:${guid}`;
+  const platform = typeof remote.platform === 'string' ? remote.platform.trim().toLowerCase() : '';
+  const title = typeof remote.title === 'string' ? remote.title.trim() : '';
+  let secondary = title;
+  if (!secondary && Array.isArray(remote.artists)) {
+    secondary = remote.artists.map((name) => (typeof name === 'string' ? name.trim() : '')).filter(Boolean).join(', ');
+  }
+  const base = [platform, secondary].filter(Boolean).join(':');
+  return base ? `remote:title:${base}` : '';
+}
+
+function resolveMediaKey(videoId = state.activeVideoId) {
+  if (videoId) return videoId;
+  if (!state.useRemoteTimeline) return '';
+  if (state.remoteMediaKey) return state.remoteMediaKey;
+  const remoteKey = getRemoteMediaKey();
+  if (remoteKey) {
+    state.remoteMediaKey = remoteKey;
+    return remoteKey;
+  }
+  return '';
+}
+
+function buildSubtitleOffsetKey(mediaKey, subsId) {
+  return [mediaKey || '', subsId || ''].join('::');
+}
+
 function makeSubtitleOffsetKey(videoId = state.activeVideoId, subsId = state.activeSubsId) {
-  return [videoId || '', subsId || ''].join('::');
+  const mediaKey = resolveMediaKey(videoId);
+  return buildSubtitleOffsetKey(mediaKey, subsId);
 }
 
 function normalizeSubtitleOffsetOverrides(raw, defaults = state.subtitleOffsetDefaults) {
@@ -383,11 +613,12 @@ function resolveSubtitleOffset({ videoId = state.activeVideoId, subsId = state.a
     seconds: sanitizeSubtitleOffsetSeconds(state.subtitleOffsetDefaults?.seconds)
   };
   const overrides = state.subtitleOffsetOverrides || {};
+  const mediaKey = resolveMediaKey(videoId);
   const candidates = [];
-  const fullKey = makeSubtitleOffsetKey(videoId, subsId);
+  const fullKey = buildSubtitleOffsetKey(mediaKey, subsId);
   if (fullKey && fullKey !== '::') candidates.push(fullKey);
-  if (videoId) candidates.push([videoId, ''].join('::'));
-  if (subsId) candidates.push(['', subsId].join('::'));
+  if (mediaKey) candidates.push(buildSubtitleOffsetKey(mediaKey, ''));
+  if (subsId) candidates.push(buildSubtitleOffsetKey('', subsId));
   const seen = new Set();
   for (const key of candidates) {
     if (!key || seen.has(key)) continue;
@@ -404,11 +635,12 @@ function resolveSubtitleOffset({ videoId = state.activeVideoId, subsId = state.a
 }
 
 function applySubtitleOffsetForSelection({ videoId = state.activeVideoId, subsId = state.activeSubsId, notify = true } = {}) {
-  const hasCompleteSelection = Boolean(videoId) && Boolean(subsId);
+  const mediaKey = resolveMediaKey(videoId);
+  const hasCompleteSelection = Boolean(mediaKey) && Boolean(subsId);
   setSubtitleOffsetControlsEnabled(hasCompleteSelection);
   const prevMode = state.subtitleOffsetMode;
   const prevSeconds = state.subtitleOffsetSeconds;
-  const resolved = resolveSubtitleOffset({ videoId, subsId });
+  const resolved = resolveSubtitleOffset({ videoId: mediaKey, subsId });
   setSubtitleOffsetState(resolved);
   const modeChanged = resolved.mode !== prevMode;
   const secondsChanged = Math.abs(resolved.seconds - prevSeconds) > OFFSET_EPSILON;
@@ -512,7 +744,10 @@ async function loadInitialConfig() {
   };
   state.subtitleOffsetOverrides = normalizeSubtitleOffsetOverrides(output?.subtitleOffsetOverrides, state.subtitleOffsetDefaults);
   setSubtitleOffsetState(state.subtitleOffsetDefaults);
-  setSubtitleOffsetControlsEnabled(Boolean(state.activeVideoId) && Boolean(state.activeSubsId));
+  const hasMediaForOffset = Boolean(resolveMediaKey(state.activeVideoId));
+  setSubtitleOffsetControlsEnabled(hasMediaForOffset && Boolean(state.activeSubsId));
+  const remoteTimelineEnabled = cfg?.player?.useRemoteTimeline === true;
+  setRemoteTimelineEnabled(remoteTimelineEnabled, { persist: false });
   const storedVolume = cfg?.player?.volume;
   const initialVolume = clampVolume(storedVolume != null ? storedVolume : dom.video?.volume ?? 1);
   state.playerVolume = initialVolume;
@@ -632,6 +867,7 @@ function setupEventHandlers() {
   dom.clearCookies?.addEventListener('click', handleClearCookies);
   dom.checkBins?.addEventListener('click', handleCheckBins);
   dom.pickVideo?.addEventListener('click', handlePickVideo);
+  dom.useRemoteTimelineToggle?.addEventListener('change', handleRemoteTimelineToggle);
   dom.pickSubs?.addEventListener('click', handlePickSubs);
   dom.pickFonts?.addEventListener('click', handlePickFonts);
   dom.clearFonts?.addEventListener('click', handleClearFonts);
@@ -1421,11 +1657,26 @@ async function loadSubtitleEntry(entry) {
   }
 }
 
+function describeRemoteNowPlaying(info) {
+  const target = info || state.remoteNowPlaying;
+  if (!target) return '';
+  const pieces = [];
+  if (target.title) pieces.push(target.title);
+  if (Array.isArray(target.artists) && target.artists.length) pieces.push(target.artists.join(', '));
+  if (target.platform) pieces.push(`@${target.platform}`);
+  return pieces.join(' / ');
+}
+
 function updateActiveCacheInfo({ video = getEntryById(state.activeVideoId), subs = getEntryById(state.activeSubsId) } = {}) {
   if (!dom.activeCacheInfo) return;
   const videoLabel = video ? describeVideoEntry(video) : '（未選擇）';
   const subsLabel = subs ? describeSubtitleEntry(subs) : '（未選擇）';
-  dom.activeCacheInfo.textContent = `影片/音訊：${videoLabel}\n字幕：${subsLabel}`;
+  let infoText = '影片/音訊：' + videoLabel + '\n字幕：' + subsLabel;
+  if (state.useRemoteTimeline && state.remoteNowPlaying) {
+    const remoteLabel = describeRemoteNowPlaying(state.remoteNowPlaying);
+    if (remoteLabel) infoText += '\n外部時間軸：' + remoteLabel;
+  }
+  dom.activeCacheInfo.textContent = infoText;
 }
 
 /* ---------------- 字幕處理 ---------------- */
@@ -1747,7 +1998,12 @@ function releaseObjectUrl() {
 
 function syncOverlayConnection() {
   overlaySync.connect(getCurrentPort());
-  overlaySync.start();
+  if (state.useRemoteTimeline) {
+    overlaySync.stop();
+    if (state.remoteNowPlaying) applyRemoteTimeline(state.remoteNowPlaying);
+  } else {
+    overlaySync.start();
+  }
 }
 
 function clampVolume(value) {

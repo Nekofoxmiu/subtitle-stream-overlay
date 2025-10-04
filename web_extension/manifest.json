@@ -1,0 +1,24 @@
+{
+  "name": "subtitle-stream-overlay - 網頁同步工具",
+  "version": "1.0.0",
+  "description": "用來發送資料給 subtitle-stream-overlay 的工具",
+  "manifest_version": 3,
+  "author": "Nekofoxball (修改自 孤之界、Tizhproger)",
+  "homepage_url": "https://github.com/Nekofoxmiu/subtitle-stream-overlay",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.youtube.com/*",
+        "https://*.spotify.com/*",
+        "https://*.soundcloud.com/*",
+        "https://*.bilibili.com/*"
+      ],
+      "js": ["nowplaying_client.js"]
+    }
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

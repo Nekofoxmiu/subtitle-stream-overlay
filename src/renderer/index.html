@@ -1065,6 +1065,11 @@
           <div class="row">
             <div class="action-row">
               <button id="pickVideo" class="btn" type="button">選擇本地媒體檔</button>
+              <label class="toggle-control" for="useRemoteTimelineToggle">
+                <input type="checkbox" id="useRemoteTimelineToggle" role="switch" aria-checked="false">
+                <span class="toggle-slider" aria-hidden="true"></span>
+                <span>使用外部時間</span>
+              </label>
             </div>
             <input type="file" id="videoFile" accept="video/*,audio/*" hidden>
           </div>
@@ -1268,4 +1273,5 @@
 </body>
 
 </html>
+
 

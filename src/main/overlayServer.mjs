@@ -56,6 +56,53 @@ function normalizeFontBufferList(list) {
   return list.map(normalizeFontBuffer).filter(Boolean);
 }
 
+function coerceNonNegativeNumber(value) {
+  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : 0;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return 0;
+    const num = Number(trimmed);
+    return Number.isFinite(num) && num >= 0 ? num : 0;
+  }
+  return 0;
+}
+
+function looksLikeNowPlayingPayload(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  if (typeof raw.guid === 'string' && raw.guid.trim()) return true;
+  if (typeof raw.progress === 'number' || typeof raw.progressMs === 'number') return true;
+  if (typeof raw.duration === 'number' || typeof raw.durationMs === 'number') return true;
+  if (typeof raw.status === 'string' && raw.status.trim()) return true;
+  if (typeof raw.title === 'string' && raw.title.trim()) return true;
+  return false;
+}
+
+function normalizeNowPlayingPayload(raw) {
+  if (!looksLikeNowPlayingPayload(raw)) return null;
+  const progressMs = coerceNonNegativeNumber(raw?.progress ?? raw?.progressMs);
+  const durationMs = coerceNonNegativeNumber(raw?.duration ?? raw?.durationMs);
+  const clampProgress = durationMs > 0 ? Math.min(progressMs, durationMs) : progressMs;
+  const normalizeStr = (value) => (typeof value === 'string' ? value.trim() : '');
+  const status = normalizeStr(raw?.status).toLowerCase() || 'unknown';
+  const artists = Array.isArray(raw?.artists)
+    ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
+    : [];
+  return {
+    guid: normalizeStr(raw?.guid),
+    cover: normalizeStr(raw?.cover),
+    title: normalizeStr(raw?.title),
+    artists,
+    status,
+    progressMs: clampProgress,
+    progressSeconds: clampProgress / 1000,
+    durationMs,
+    durationSeconds: durationMs / 1000,
+    songLink: normalizeStr(raw?.song_link),
+    platform: normalizeStr(raw?.platform),
+    isLive: raw?.is_live === true,
+    receivedAt: Date.now()
+  };
+}
 function analyseFontName(name) {
   if (typeof name !== 'string') {
     return { original: '', baseFamily: '', weight: null, italic: null };
@@ -199,6 +246,10 @@ export class OverlayServer {
       playRes: clonePlayRes(),
       assMeta: EMPTY_ASS_META
     };
+    this.remoteSessions = new Map();
+    this.activeSessionKey = '';
+    this.nowPlaying = null;
+
     this.app = express();
     this.server = http.createServer(this.app);
     this.server.on('error', (err) => {
@@ -293,18 +344,122 @@ export class OverlayServer {
   setupWs() {
     this.wss.on('connection', ws => {
       ws.send(JSON.stringify({ type: 'state', payload: this.state }));
+      if (this.nowPlaying) {
+        try { ws.send(JSON.stringify({ type: 'nowPlaying', payload: this.nowPlaying })); } catch { /* noop */ }
+      }
       ws.on('message', msg => {
-        try {
-          const { type, payload } = JSON.parse(msg);
-          if (type === 'setTime') {
-            // 保留：外部時間軸（之後接 YouTube）
-            this.broadcast({ type: 'setTime', payload });
-          }
-        } catch { }
+        let data = msg;
+        if (Buffer.isBuffer(data)) {
+          data = data.toString('utf8');
+        } else if (ArrayBuffer.isView(data)) {
+          const view = data;
+          const buf = Buffer.from(view.buffer, view.byteOffset || 0, view.byteLength || view.buffer.byteLength);
+          data = buf.toString('utf8');
+        } else if (data instanceof ArrayBuffer) {
+          data = Buffer.from(data).toString('utf8');
+        }
+        if (typeof data !== 'string') return;
+        const trimmed = data.trim();
+        if (!trimmed) return;
+        const firstChar = trimmed[0];
+        if (firstChar !== '{' && firstChar !== '[') return;
+        let parsed;
+        try { parsed = JSON.parse(trimmed); } catch { return; }
+        if (!parsed || typeof parsed !== 'object') return;
+        const { type, payload } = parsed;
+        if (type === 'setTime') {
+          this.broadcast({ type: 'setTime', payload });
+        } else if (type === 'nowPlaying' && payload) {
+          this.updateNowPlaying(payload);
+        } else if (looksLikeNowPlayingPayload(parsed)) {
+          this.updateNowPlaying(parsed);
+        }
       });
     });
   }
+  deriveSessionKey(payload) {
+    if (!payload || typeof payload !== 'object') return 'unknown';
+    if (payload.guid) return `guid:${payload.guid}`;
+    if (payload.songLink) return `song:${payload.songLink}`;
+    const platform = typeof payload.platform === 'string' ? payload.platform.trim().toLowerCase() : '';
+    const title = typeof payload.title === 'string' ? payload.title.trim().toLowerCase() : '';
+    if (platform || title) return `meta:${platform}:${title}`;
+    return 'unknown';
+  }
 
+  selectActiveSession() {
+    let bestKey = '';
+    let bestTs = -1;
+    for (const [key, session] of this.remoteSessions) {
+      const status = String(session?.status || '').toLowerCase();
+      if (status === 'playing') {
+        const ts = session.lastPlayTs ?? session.lastUpdate ?? 0;
+        if (ts >= bestTs) {
+          bestTs = ts;
+          bestKey = key;
+        }
+      }
+    }
+    if (bestKey) return bestKey;
+    if (this.activeSessionKey && this.remoteSessions.has(this.activeSessionKey)) return this.activeSessionKey;
+    let fallbackKey = '';
+    let fallbackTs = -1;
+    for (const [key, session] of this.remoteSessions) {
+      const ts = session.lastUpdate ?? 0;
+      if (ts >= fallbackTs) {
+        fallbackTs = ts;
+        fallbackKey = key;
+      }
+    }
+    return fallbackKey;
+  }
+
+  updateNowPlaying(raw) {
+    const normalized = normalizeNowPlayingPayload(raw);
+    if (!normalized) return;
+    const sessionKey = this.deriveSessionKey(normalized);
+    const now = Date.now();
+    const session = this.remoteSessions.get(sessionKey) || { lastPlayTs: 0, status: 'stopped' };
+    const previousStatus = String(session.status || '').toLowerCase();
+    session.nowPlaying = normalized;
+    session.lastUpdate = now;
+    session.status = String(normalized.status || '').toLowerCase();
+    if (session.status === 'playing' && previousStatus !== 'playing') {
+      session.lastPlayTs = now;
+    }
+    this.remoteSessions.set(sessionKey, session);
+
+    const previousActive = this.activeSessionKey;
+    const selectedKey = this.selectActiveSession();
+    this.activeSessionKey = selectedKey;
+    const activeSession = selectedKey ? this.remoteSessions.get(selectedKey) : null;
+    const activePayload = activeSession?.nowPlaying || null;
+
+    if (activePayload) {
+      const becameActive = selectedKey !== previousActive || selectedKey === sessionKey;
+      if (becameActive) {
+        this.nowPlaying = activePayload;
+        this.broadcast({ type: 'nowPlaying', payload: activePayload });
+        const useRemoteTimeline = store.get('player.useRemoteTimeline') === true;
+        if (useRemoteTimeline) {
+          const t = Number.isFinite(activePayload.progressSeconds)
+            ? activePayload.progressSeconds
+            : (Number.isFinite(activePayload.progressMs) ? activePayload.progressMs / 1000 : null);
+          if (t != null) {
+            this.broadcast({ type: 'setTime', payload: { t } });
+          }
+        }
+      }
+    } else if (!this.activeSessionKey) {
+      this.nowPlaying = null;
+    }
+    const STALE_WINDOW = 5 * 60 * 1000;
+    for (const [key, sessionData] of this.remoteSessions) {
+      if (key === this.activeSessionKey) continue;
+      const age = now - (sessionData.lastUpdate ?? now);
+      if (age > STALE_WINDOW) this.remoteSessions.delete(key);
+    }
+  }
   broadcast(obj) {
     const s = JSON.stringify(obj);
     for (const client of this.wss.clients) {
