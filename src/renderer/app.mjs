@@ -960,6 +960,7 @@ overlaySync.setNowPlayingHandler(handleRemoteNowPlaying);
 overlaySync.setRemoteSessionsHandler(handleRemoteSessionsUpdate);
 const REMOTE_TIME_EPSILON = 0.25;
 const REMOTE_STALL_TIME_MS = 1500;
+const REMOTE_SESSION_EXPIRY_MS = 10 * 60 * 1000;
 
 function looksLikeNowPlayingPayload(raw) {
   if (!raw || typeof raw !== 'object') return false;
@@ -1091,6 +1092,25 @@ function commitRemoteNowPlaying(payload, { derivedKeyHint = '' } = {}) {
   updateActiveCacheInfo();
 }
 
+function clearRemotePlaybackState() {
+  const hadRemote = Boolean(state.remoteNowPlaying);
+  const hadMediaKey = Boolean(state.remoteMediaKey);
+  state.remoteNowPlaying = null;
+  state.remoteLastGuid = '';
+  state.remoteLastUpdate = 0;
+  state.remoteMediaKey = '';
+  stopRemoteProgressTimer();
+  if (dom.video) {
+    dom.video.removeAttribute('data-remote-status');
+    dom.video.classList.remove('is-remote-playing', 'is-remote-paused');
+  }
+  updateRemotePlayerUi(null);
+  clearRemoteCover();
+  if (hadRemote || hadMediaKey) {
+    updateActiveCacheInfo();
+  }
+}
+
 function sanitizeRemoteIdentity(value, { lower = false } = {}) {
   if (typeof value !== 'string') return '';
   const trimmed = value.trim();
@@ -1181,6 +1201,7 @@ function handleRemoteSessionsUpdate(payload = {}) {
   state.remoteSelectedKey = normalized.some((session) => session.key === selectedKey) ? selectedKey : '';
   if (!normalized.length) {
     state.remoteSessionNowPlaying.clear();
+    clearRemotePlaybackState();
   } else {
     const allowedKeys = [];
     for (const session of normalized) {
@@ -1224,7 +1245,11 @@ function handleRemoteSessionsUpdate(payload = {}) {
     const snapshot = state.remoteSessionNowPlaying.get(trackedKey);
     if (snapshot) {
       commitRemoteNowPlaying(snapshot);
+    } else {
+      clearRemotePlaybackState();
     }
+  } else {
+    clearRemotePlaybackState();
   }
 }
 
@@ -2804,7 +2829,12 @@ function normalizeRemoteSession(raw) {
   const lastUpdate = Number.isFinite(lastUpdateRaw) ? lastUpdateRaw : 0;
   const lastPlayTsRaw = Number(raw.lastPlayTs);
   const lastPlayTs = Number.isFinite(lastPlayTsRaw) ? lastPlayTsRaw : 0;
+  const lastSeenRaw = Number(raw.lastSeen);
+  const lastSeen = Number.isFinite(lastSeenRaw) ? lastSeenRaw : 0;
   const connected = raw.connected !== false;
+  const activityTs = Math.max(lastUpdate, lastPlayTs, lastSeen);
+  const now = Date.now();
+  if (activityTs > 0 && now - activityTs > REMOTE_SESSION_EXPIRY_MS) return null;
   let nowPlaying = null;
   if (raw.nowPlaying && typeof raw.nowPlaying === 'object') {
     const rawSessionKey = typeof raw.nowPlaying.sessionKey === 'string'
@@ -2841,7 +2871,6 @@ function normalizeRemoteSession(raw) {
     };
   }
   const resolvedStatus = (nowPlaying?.status || status || 'unknown').toLowerCase();
-  if (resolvedStatus === 'stopped') return null;
   const searchParts = [key, host];
   if (nowPlaying) {
     if (nowPlaying.title) searchParts.push(nowPlaying.title);
@@ -2853,7 +2882,17 @@ function normalizeRemoteSession(raw) {
     .filter(Boolean)
     .map((value) => String(value).toLowerCase())
     .join(' ');
-  return { key, host, status: resolvedStatus || 'unknown', lastUpdate, lastPlayTs, connected, nowPlaying, searchText };
+  return {
+    key,
+    host,
+    status: resolvedStatus || 'unknown',
+    lastUpdate,
+    lastPlayTs,
+    lastSeen,
+    connected,
+    nowPlaying,
+    searchText
+  };
 }
 
 function matchesRemoteSessionSearch(session, term) {

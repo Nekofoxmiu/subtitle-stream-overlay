@@ -33,6 +33,7 @@ const FONT_WEIGHT_PATTERNS = [
 const FONT_ITALIC_PATTERNS = [/\bitalic\b/gi, /\boblique\b/gi];
 const REMOTE_PROGRESS_EPSILON_SECONDS = 0.25;
 const REMOTE_STALL_TIME_MS = 1500;
+const REMOTE_SESSION_EXPIRY_MS = 10 * 60 * 1000;
 
 function mergeStyles(currentStyle, patchStyle) {
   const base = (currentStyle && typeof currentStyle === 'object') ? currentStyle : {};
@@ -291,6 +292,7 @@ export class OverlayServer {
     this.activeSessionKey = '';
     this.selectedSessionKey = '';
     this.nowPlaying = null;
+    this.remoteSessionSweepTimer = setInterval(() => this.sweepRemoteSessions(), 60 * 1000);
 
     this.app = express();
     this.server = http.createServer(this.app);
@@ -486,12 +488,71 @@ export class OverlayServer {
     return 'unknown';
   }
 
-  selectActiveSession({ preferSelected = true } = {}) {
+  getSessionActivityTimestamp(session) {
+    if (!session || typeof session !== 'object') return 0;
+    const update = Number(session.lastUpdate) || 0;
+    const seen = Number(session.lastSeen) || 0;
+    const play = Number(session.lastPlayTs) || 0;
+    return Math.max(update, seen, play);
+  }
+
+  isSessionExpired(session, now = Date.now()) {
+    if (!session || typeof session !== 'object') return true;
+    const ts = this.getSessionActivityTimestamp(session);
+    if (ts <= 0) return false;
+    return (now - ts) > REMOTE_SESSION_EXPIRY_MS;
+  }
+
+  pruneExpiredSessions({ now = Date.now() } = {}) {
+    let removed = false;
+    for (const [key, session] of this.remoteSessions) {
+      if (!this.isSessionExpired(session, now)) continue;
+      this.remoteSessions.delete(key);
+      if (this.activeSessionKey === key) {
+        this.activeSessionKey = '';
+        this.nowPlaying = null;
+      }
+      if (this.selectedSessionKey === key) {
+        this.selectedSessionKey = '';
+      }
+      removed = true;
+    }
+    return removed;
+  }
+
+  sweepRemoteSessions({ now = Date.now() } = {}) {
+    const removed = this.pruneExpiredSessions({ now });
+    if (!removed) return;
+    const previousActive = this.activeSessionKey;
+    const nextActive = this.selectActiveSession({ now });
+    this.activeSessionKey = nextActive;
+    if (nextActive) {
+      const activeSession = this.remoteSessions.get(nextActive) || null;
+      this.nowPlaying = activeSession?.nowPlaying || null;
+      if (this.nowPlaying && previousActive !== nextActive) {
+        this.broadcast({ type: 'nowPlaying', payload: this.nowPlaying });
+        const useRemoteTimeline = store.get('player.useRemoteTimeline') === true;
+        if (useRemoteTimeline) {
+          const t = Number.isFinite(this.nowPlaying.progressSeconds)
+            ? this.nowPlaying.progressSeconds
+            : (Number.isFinite(this.nowPlaying.progressMs) ? this.nowPlaying.progressMs / 1000 : null);
+          if (t != null) {
+            this.broadcast({ type: 'setTime', payload: { t } });
+          }
+        }
+      }
+    } else if (previousActive) {
+      this.nowPlaying = null;
+    }
+    this.emitRemoteSessions();
+  }
+
+  selectActiveSession({ preferSelected = true, now = Date.now() } = {}) {
     let selectedSession = null;
     if (this.selectedSessionKey) {
       selectedSession = this.remoteSessions.get(this.selectedSessionKey) || null;
-      const status = String(selectedSession?.status || '').toLowerCase();
-      if (!selectedSession || status === 'stopped') {
+      const expired = !selectedSession || this.isSessionExpired(selectedSession, now);
+      if (expired) {
         this.selectedSessionKey = '';
         selectedSession = null;
       }
@@ -503,8 +564,8 @@ export class OverlayServer {
     let activeSession = null;
     if (this.activeSessionKey) {
       activeSession = this.remoteSessions.get(this.activeSessionKey) || null;
-      const status = String(activeSession?.status || '').toLowerCase();
-      if (!activeSession || status === 'stopped') {
+      const expired = !activeSession || this.isSessionExpired(activeSession, now);
+      if (expired) {
         this.activeSessionKey = '';
         activeSession = null;
       }
@@ -513,7 +574,7 @@ export class OverlayServer {
     let bestTs = -1;
     for (const [key, session] of this.remoteSessions) {
       const status = String(session?.status || '').toLowerCase();
-      if (status === 'stopped') continue;
+      if (this.isSessionExpired(session, now)) continue;
       if (status === 'playing') {
         const ts = session.lastPlayTs ?? session.lastUpdate ?? 0;
         if (ts >= bestTs) {
@@ -528,14 +589,16 @@ export class OverlayServer {
     let fallbackTs = -1;
     for (const [key, session] of this.remoteSessions) {
       const status = String(session?.status || '').toLowerCase();
-      if (status === 'stopped') continue;
+      if (this.isSessionExpired(session, now)) continue;
       const ts = session.lastUpdate ?? 0;
       if (ts >= fallbackTs) {
         fallbackTs = ts;
         fallbackKey = key;
       }
     }
-    return fallbackKey;
+    if (fallbackKey) return fallbackKey;
+    if (this.selectedSessionKey && selectedSession) return this.selectedSessionKey;
+    return '';
   }
 
   updateNowPlaying(raw) {
@@ -567,6 +630,7 @@ export class OverlayServer {
     }
     session.nowPlaying = normalizedWithKey;
     session.lastUpdate = now;
+    session.lastSeen = now;
     session.status = String(normalizedWithKey.status || '').toLowerCase();
     if (session.status === 'playing' && previousStatus !== 'playing') {
       session.lastPlayTs = now;
@@ -597,15 +661,17 @@ export class OverlayServer {
     } else if (!this.activeSessionKey) {
       this.nowPlaying = null;
     }
-    const STALE_WINDOW = 5 * 60 * 1000;
-    for (const [key, sessionData] of this.remoteSessions) {
-      if (key === this.activeSessionKey) continue;
-      const age = now - (sessionData.lastUpdate ?? now);
-      if (age > STALE_WINDOW) this.remoteSessions.delete(key);
-    }
-    if (this.activeSessionKey && !this.remoteSessions.has(this.activeSessionKey)) {
-      this.activeSessionKey = '';
-      this.nowPlaying = null;
+    const removed = this.pruneExpiredSessions({ now });
+    if ((!this.activeSessionKey || !this.remoteSessions.has(this.activeSessionKey)) && this.remoteSessions.size) {
+      const nextKey = this.selectActiveSession({ now });
+      if (nextKey) {
+        this.activeSessionKey = nextKey;
+        const nextSession = this.remoteSessions.get(nextKey) || null;
+        this.nowPlaying = nextSession?.nowPlaying || null;
+      } else if (!removed) {
+        this.activeSessionKey = '';
+        this.nowPlaying = null;
+      }
     }
     if (this.selectedSessionKey && !this.remoteSessions.has(this.selectedSessionKey)) {
       this.selectedSessionKey = '';
@@ -613,10 +679,11 @@ export class OverlayServer {
     this.emitRemoteSessions();
   }
   buildRemoteSessionsPayload() {
+    const now = Date.now();
     const sessions = [];
     for (const [key, session] of this.remoteSessions) {
+      if (this.isSessionExpired(session, now)) continue;
       const status = String(session?.status || '').toLowerCase();
-      if (status === 'stopped') continue;
       const info = session?.nowPlaying || null;
       sessions.push({
         key,
@@ -624,6 +691,7 @@ export class OverlayServer {
         status: session?.status || 'unknown',
         lastUpdate: session?.lastUpdate || 0,
         lastPlayTs: session?.lastPlayTs || 0,
+        lastSeen: session?.lastSeen || 0,
         connected: session?.connected !== false,
         guid: session?.guid || info?.guid || '',
         nowPlaying: info ? {
@@ -686,14 +754,14 @@ export class OverlayServer {
   setActiveSessionKey(key) {
     const normalized = typeof key === 'string' ? key.trim() : '';
     const session = normalized ? this.remoteSessions.get(normalized) : null;
-    const status = String(session?.status || '').toLowerCase();
-    const exists = Boolean(normalized && session && status !== 'stopped');
+    const now = Date.now();
+    const exists = Boolean(normalized && session && !this.isSessionExpired(session, now));
     this.selectedSessionKey = exists ? normalized : '';
     const previousActive = this.activeSessionKey;
     if (exists) {
       this.activeSessionKey = normalized;
     } else {
-      this.activeSessionKey = this.selectActiveSession({ preferSelected: false });
+      this.activeSessionKey = this.selectActiveSession({ preferSelected: false, now });
     }
     const activeSession = this.activeSessionKey ? this.remoteSessions.get(this.activeSessionKey) : null;
     const activePayload = activeSession?.nowPlaying || null;
@@ -824,6 +892,10 @@ export class OverlayServer {
     // once the underlying HTTP server is closed.
     return new Promise((resolve) => {
       try {
+        if (this.remoteSessionSweepTimer) {
+          clearInterval(this.remoteSessionSweepTimer);
+          this.remoteSessionSweepTimer = null;
+        }
         if (this.wss) {
           try { this.wss.close(); } catch (err) { /* swallow */ }
         }
