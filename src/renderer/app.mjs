@@ -2616,6 +2616,8 @@ function normalizeRemoteSession(raw) {
       isLive: raw.nowPlaying.isLive === true
     };
   }
+  const resolvedStatus = (nowPlaying?.status || status || 'unknown').toLowerCase();
+  if (resolvedStatus === 'stopped') return null;
   const searchParts = [key, host];
   if (nowPlaying) {
     if (nowPlaying.title) searchParts.push(nowPlaying.title);
@@ -2627,7 +2629,7 @@ function normalizeRemoteSession(raw) {
     .filter(Boolean)
     .map((value) => String(value).toLowerCase())
     .join(' ');
-  return { key, host, status, lastUpdate, lastPlayTs, connected, nowPlaying, searchText };
+  return { key, host, status: resolvedStatus || 'unknown', lastUpdate, lastPlayTs, connected, nowPlaying, searchText };
 }
 
 function matchesRemoteSessionSearch(session, term) {

@@ -439,16 +439,33 @@ export class OverlayServer {
   }
 
   selectActiveSession({ preferSelected = true } = {}) {
-    if (preferSelected && this.selectedSessionKey && this.remoteSessions.has(this.selectedSessionKey)) {
+    let selectedSession = null;
+    if (this.selectedSessionKey) {
+      selectedSession = this.remoteSessions.get(this.selectedSessionKey) || null;
+      const status = String(selectedSession?.status || '').toLowerCase();
+      if (!selectedSession || status === 'stopped') {
+        this.selectedSessionKey = '';
+        selectedSession = null;
+      }
+    }
+    if (preferSelected && this.selectedSessionKey && selectedSession) {
       return this.selectedSessionKey;
     }
-    if (this.selectedSessionKey && !this.remoteSessions.has(this.selectedSessionKey)) {
-      this.selectedSessionKey = '';
+
+    let activeSession = null;
+    if (this.activeSessionKey) {
+      activeSession = this.remoteSessions.get(this.activeSessionKey) || null;
+      const status = String(activeSession?.status || '').toLowerCase();
+      if (!activeSession || status === 'stopped') {
+        this.activeSessionKey = '';
+        activeSession = null;
+      }
     }
     let bestKey = '';
     let bestTs = -1;
     for (const [key, session] of this.remoteSessions) {
       const status = String(session?.status || '').toLowerCase();
+      if (status === 'stopped') continue;
       if (status === 'playing') {
         const ts = session.lastPlayTs ?? session.lastUpdate ?? 0;
         if (ts >= bestTs) {
@@ -458,10 +475,12 @@ export class OverlayServer {
       }
     }
     if (bestKey) return bestKey;
-    if (this.activeSessionKey && this.remoteSessions.has(this.activeSessionKey)) return this.activeSessionKey;
+    if (this.activeSessionKey && activeSession) return this.activeSessionKey;
     let fallbackKey = '';
     let fallbackTs = -1;
     for (const [key, session] of this.remoteSessions) {
+      const status = String(session?.status || '').toLowerCase();
+      if (status === 'stopped') continue;
       const ts = session.lastUpdate ?? 0;
       if (ts >= fallbackTs) {
         fallbackTs = ts;
@@ -528,6 +547,8 @@ export class OverlayServer {
   buildRemoteSessionsPayload() {
     const sessions = [];
     for (const [key, session] of this.remoteSessions) {
+      const status = String(session?.status || '').toLowerCase();
+      if (status === 'stopped') continue;
       const info = session?.nowPlaying || null;
       sessions.push({
         key,
@@ -566,11 +587,15 @@ export class OverlayServer {
       }
       return a.key.localeCompare(b.key);
     });
+    const hasActive = this.activeSessionKey && sessions.some((session) => session.key === this.activeSessionKey);
+    const hasSelected = this.selectedSessionKey && sessions.some((session) => session.key === this.selectedSessionKey);
+    const activeKey = hasActive ? this.activeSessionKey : '';
+    const selectedKey = hasSelected ? this.selectedSessionKey : '';
     return {
       type: 'remoteSessions',
       payload: {
-        activeKey: this.activeSessionKey || '',
-        selectedKey: this.selectedSessionKey || '',
+        activeKey,
+        selectedKey,
         sessions
       }
     };
@@ -587,7 +612,9 @@ export class OverlayServer {
   }
   setActiveSessionKey(key) {
     const normalized = typeof key === 'string' ? key.trim() : '';
-    const exists = normalized && this.remoteSessions.has(normalized);
+    const session = normalized ? this.remoteSessions.get(normalized) : null;
+    const status = String(session?.status || '').toLowerCase();
+    const exists = Boolean(normalized && session && status !== 'stopped');
     this.selectedSessionKey = exists ? normalized : '';
     const previousActive = this.activeSessionKey;
     if (exists) {
