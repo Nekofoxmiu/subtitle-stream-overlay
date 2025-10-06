@@ -1032,6 +1032,23 @@ function handleRemoteSessionsUpdate(payload = {}) {
     const entry = normalizeRemoteSession(item);
     if (entry) normalized.push(entry);
   }
+  normalized.sort((a, b) => {
+    const playA = Number(a?.lastPlayTs) || 0;
+    const playB = Number(b?.lastPlayTs) || 0;
+    if (playA !== playB) return playB - playA;
+    const updateA = Number(a?.lastUpdate) || 0;
+    const updateB = Number(b?.lastUpdate) || 0;
+    if (updateA !== updateB) return updateB - updateA;
+    const statusA = (a?.status || '').toLowerCase();
+    const statusB = (b?.status || '').toLowerCase();
+    if (statusA !== statusB) {
+      const rank = { playing: 2, paused: 1 };
+      const scoreA = rank[statusA] || 0;
+      const scoreB = rank[statusB] || 0;
+      if (scoreA !== scoreB) return scoreB - scoreA;
+    }
+    return a.key.localeCompare(b.key);
+  });
   state.remoteSessions = normalized;
   const activeKey = typeof payload.activeKey === 'string' ? payload.activeKey : '';
   const selectedKey = typeof payload.selectedKey === 'string' ? payload.selectedKey : '';
