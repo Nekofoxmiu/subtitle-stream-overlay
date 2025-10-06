@@ -1061,7 +1061,9 @@ function handleRemoteNowPlaying(raw) {
   }
   state.remoteNowPlaying = payload;
   if (payload.guid) state.remoteLastGuid = payload.guid;
-  state.remoteLastUpdate = payload.receivedAt;
+  state.remoteLastUpdate = Number.isFinite(payload.receivedAt)
+    ? payload.receivedAt
+    : Date.now();
   const previousKey = state.remoteMediaKey || '';
   if (derivedKey) state.remoteMediaKey = derivedKey;
   if (state.useRemoteTimeline) {
@@ -1074,7 +1076,8 @@ function handleRemoteNowPlaying(raw) {
     updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
   }
   updateRemotePlayerUi(payload);
-  if (state.useRemoteTimeline && String(payload.status || '').toLowerCase() === 'playing') {
+  const effectiveStatus = getRemotePlaybackStatus(payload);
+  if (state.useRemoteTimeline && effectiveStatus === 'playing') {
     startRemoteProgressTimer();
   } else {
     stopRemoteProgressTimer();
@@ -1120,7 +1123,7 @@ function handleRemoteSessionsUpdate(payload = {}) {
 function applyRemoteTimeline(payload) {
   if (!payload) return;
   if (!dom.video) return;
-  const status = String(payload.status || '').toLowerCase();
+  const status = getRemotePlaybackStatus(payload);
   dom.video.dataset.remoteStatus = status || 'unknown';
   dom.video.classList.toggle('is-remote-playing', status === 'playing');
   dom.video.classList.toggle('is-remote-paused', status === 'paused');
@@ -1167,6 +1170,32 @@ function formatClockTime(seconds) {
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+function getRemotePayloadTimestamp(info = state.remoteNowPlaying) {
+  if (info && Number.isFinite(info.receivedAt)) return info.receivedAt;
+  if (info === state.remoteNowPlaying && Number.isFinite(state.remoteLastUpdate)) {
+    return state.remoteLastUpdate;
+  }
+  return 0;
+}
+
+function getRemotePlaybackStatus(info = state.remoteNowPlaying) {
+  if (!info || typeof info !== 'object') return 'unknown';
+  const status = String(info.status || '').toLowerCase();
+  if (status === 'playing') {
+    const receivedAt = getRemotePayloadTimestamp(info);
+    if (receivedAt > 0) {
+      const staleFor = Date.now() - receivedAt;
+      if (staleFor >= REMOTE_STALL_TIME_MS) {
+        return 'paused';
+      }
+    }
+    return 'playing';
+  }
+  if (status === 'paused') return 'paused';
+  if (status === 'stopped') return 'stopped';
+  return status || 'unknown';
+}
+
 function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
   if (!info || typeof info !== 'object') {
     return { progress: null, duration: null };
@@ -1178,9 +1207,9 @@ function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
     ? Math.max(0, info.durationSeconds)
     : (Number.isFinite(info.durationMs) ? Math.max(0, info.durationMs / 1000) : null);
   let progress = progressBase != null ? Math.max(0, progressBase) : null;
-  const status = String(info.status || '').toLowerCase();
-  const baseTs = Number.isFinite(info.receivedAt) ? info.receivedAt : state.remoteLastUpdate || Date.now();
-  if (progress != null && status === 'playing') {
+  const status = getRemotePlaybackStatus(info);
+  const baseTs = getRemotePayloadTimestamp(info);
+  if (progress != null && status === 'playing' && baseTs > 0) {
     const elapsed = Math.max(0, (Date.now() - baseTs) / 1000);
     progress += elapsed;
   }
@@ -1213,7 +1242,7 @@ function updateRemoteProgressDisplay(info = state.remoteNowPlaying) {
 
 function getRemoteStatusLabel(info = state.remoteNowPlaying) {
   if (!info || typeof info !== 'object') return '等待播放';
-  const status = String(info.status || '').toLowerCase();
+  const status = getRemotePlaybackStatus(info);
   const isLive = info.isLive === true;
   if (status === 'playing') return isLive ? '直播中' : '播放中';
   if (status === 'paused') return isLive ? '直播暫停' : '已暫停';
@@ -1243,7 +1272,7 @@ function updateRemotePlayerUi(info = state.remoteNowPlaying) {
     applyRemoteCoverImage(remote?.cover || '');
   }
 
-  const status = String(remote?.status || '').toLowerCase();
+  const status = getRemotePlaybackStatus(remote);
   dom.remoteHud.classList.toggle('is-playing', status === 'playing');
   dom.remoteHud.classList.toggle('is-paused', status === 'paused');
   dom.remoteHud.classList.toggle('is-stopped', !status || status === 'stopped');
@@ -1260,6 +1289,13 @@ function startRemoteProgressTimer() {
       return;
     }
     updateRemoteProgressDisplay();
+    if (getRemotePlaybackStatus() !== 'playing') {
+      if (state.useRemoteTimeline && state.remoteNowPlaying) {
+        applyRemoteTimeline(state.remoteNowPlaying);
+      }
+      updateRemotePlayerUi();
+      stopRemoteProgressTimer();
+    }
   }, 500);
 }
 
@@ -1396,7 +1432,11 @@ function setRemoteTimelineEnabled(enabled, { persist = false } = {}) {
   updateRemotePlayerVisibility();
   if (state.useRemoteTimeline) {
     updateRemotePlayerUi();
-    startRemoteProgressTimer();
+    if (getRemotePlaybackStatus() === 'playing') {
+      startRemoteProgressTimer();
+    } else {
+      stopRemoteProgressTimer();
+    }
   } else {
     stopRemoteProgressTimer();
     updateRemotePlayerUi();
