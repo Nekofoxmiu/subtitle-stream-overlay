@@ -7,12 +7,17 @@ var join_retry_time = 2000
 var lastStatus = 'stopped';
 var guid = generateGuid();
 
+function getCurrentPageUrl() {
+    return window.location.href;
+}
+
 function join() {
     conn = new WebSocket(FETCH_URL);
 
     conn.addEventListener('open', function (event) {
         console.log('Connection to Now Playing server established');
-        conn.send(`connected - ${hostname} (${guid})`);
+        const pageUrl = getCurrentPageUrl();
+        conn.send(`connected - ${hostname} (${guid}) | ${pageUrl}`);
         start_transfer();
         if (join_interval) {
             clearTimeout(join_interval);
@@ -83,7 +88,8 @@ function sendPlaybackUpdate(data) {
         return;
     }
 
-    const payload = { ...data, status };
+    const pageUrl = getCurrentPageUrl();
+    const payload = { ...data, status, pageUrl };
 
     if (status === 'playing') {
         lastStatus = 'playing';
@@ -296,6 +302,7 @@ if (hostname === 'soundcloud.com' ||
 
 window.addEventListener('beforeunload', function () {
     if (conn && conn.readyState === WebSocket.OPEN) {
-        conn.send(`closed - ${hostname} (${guid})`);
+        const pageUrl = getCurrentPageUrl();
+        conn.send(`closed - ${hostname} (${guid}) | ${pageUrl}`);
     }
 });

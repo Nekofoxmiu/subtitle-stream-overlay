@@ -86,6 +86,8 @@ function normalizeNowPlayingPayload(raw) {
   const artists = Array.isArray(raw?.artists)
     ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
     : [];
+  const normalizedSongLink = normalizeRemoteUrl(raw?.song_link ?? raw?.songLink);
+  const normalizedPageUrl = normalizeRemoteUrl(raw?.pageUrl ?? raw?.page_url ?? normalizedSongLink);
   return {
     guid: normalizeStr(raw?.guid),
     cover: normalizeStr(raw?.cover),
@@ -96,7 +98,8 @@ function normalizeNowPlayingPayload(raw) {
     progressSeconds: clampProgress / 1000,
     durationMs,
     durationSeconds: durationMs / 1000,
-    songLink: normalizeStr(raw?.song_link),
+    songLink: normalizedSongLink,
+    pageUrl: normalizedPageUrl,
     platform: normalizeStr(raw?.platform),
     isLive: raw?.is_live === true,
     receivedAt: Date.now()
@@ -125,6 +128,26 @@ function normalizeRemoteStatus(value) {
     return 'paused';
   }
   return normalized;
+}
+
+function normalizeRemoteUrl(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    const url = new URL(trimmed);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
+function buildGuidSessionKey(guid, pageUrl) {
+  const normalizedGuid = sanitizeRemoteIdentity(guid);
+  if (!normalizedGuid) return '';
+  const normalizedUrl = normalizeRemoteUrl(pageUrl);
+  return normalizedUrl ? `guid:${normalizedGuid}|url:${normalizedUrl}` : `guid:${normalizedGuid}`;
 }
 
 function analyseFontName(name) {
@@ -412,20 +435,41 @@ export class OverlayServer {
       });
     });
   }
+  findSessionKeyByGuid(guid, { excludeKey = '' } = {}) {
+    const normalizedGuid = sanitizeRemoteIdentity(guid);
+    if (!normalizedGuid) return '';
+    for (const [key, session] of this.remoteSessions) {
+      if (excludeKey && key === excludeKey) continue;
+      if (sanitizeRemoteIdentity(session?.guid) === normalizedGuid) {
+        return key;
+      }
+    }
+    return '';
+  }
   handleRemoteClientHandshake(message, { closed = false } = {}) {
-    const match = /^(?:connected|closed)\s*-\s*(.+)\s*\(([^)]+)\)\s*$/i.exec(message);
+    const match = /^(?:connected|closed)\s*-\s*(.+?)\s*\(([^)]+)\)(?:\s*\|\s*(.+))?\s*$/i.exec(message);
     if (!match) return;
     const host = (match[1] || '').trim();
     const guid = (match[2] || '').trim();
     if (!guid) return;
-    const key = `guid:${guid}`;
+    const rawUrl = (match[3] || '').trim();
+    const pageUrl = normalizeRemoteUrl(rawUrl);
+    const key = buildGuidSessionKey(guid, pageUrl);
     const now = Date.now();
     if (closed) {
-      const session = this.remoteSessions.get(key);
+      let sessionKey = key;
+      let session = this.remoteSessions.get(sessionKey);
+      if (!session) {
+        const fallbackKey = this.findSessionKeyByGuid(guid, { excludeKey: sessionKey });
+        if (fallbackKey) {
+          sessionKey = fallbackKey;
+          session = this.remoteSessions.get(fallbackKey);
+        }
+      }
       if (!session) return;
-      const wasActive = this.activeSessionKey === key;
-      const wasSelected = this.selectedSessionKey === key;
-      this.remoteSessions.delete(key);
+      const wasActive = this.activeSessionKey === sessionKey;
+      const wasSelected = this.selectedSessionKey === sessionKey;
+      this.remoteSessions.delete(sessionKey);
       if (wasActive) {
         this.activeSessionKey = '';
         this.nowPlaying = null;
@@ -440,9 +484,20 @@ export class OverlayServer {
       }
       return;
     }
-    const session = this.remoteSessions.get(key) || { lastPlayTs: 0, status: 'unknown' };
+    const existingKey = this.findSessionKeyByGuid(guid, { excludeKey: key });
+    let session = this.remoteSessions.get(key) || null;
+    if (!session && existingKey) {
+      session = this.remoteSessions.get(existingKey) || null;
+      if (session) {
+        this.remoteSessions.delete(existingKey);
+        if (this.activeSessionKey === existingKey) this.activeSessionKey = key;
+        if (this.selectedSessionKey === existingKey) this.selectedSessionKey = key;
+      }
+    }
+    if (!session) session = { lastPlayTs: 0, status: 'unknown' };
     session.host = host;
     session.guid = guid;
+    if (pageUrl) session.pageUrl = pageUrl;
     session.connected = true;
     session.lastSeen = now;
     if (!session.lastUpdate) session.lastUpdate = now;
@@ -454,8 +509,10 @@ export class OverlayServer {
   }
   deriveSessionKey(payload) {
     if (!payload || typeof payload !== 'object') return 'unknown';
-    if (payload.guid) return `guid:${payload.guid}`;
-    if (payload.songLink) return `song:${payload.songLink}`;
+    const guidKey = buildGuidSessionKey(payload.guid, payload.pageUrl || payload.songLink);
+    if (guidKey) return guidKey;
+    const songLink = normalizeRemoteUrl(payload.songLink);
+    if (songLink) return `song:${songLink}`;
     const platform = typeof payload.platform === 'string' ? payload.platform.trim().toLowerCase() : '';
     const title = typeof payload.title === 'string' ? payload.title.trim().toLowerCase() : '';
     if (platform || title) return `meta:${platform}:${title}`;
@@ -520,9 +577,25 @@ export class OverlayServer {
     const normalized = normalizeNowPlayingPayload(raw);
     if (!normalized) return;
 
+    const previousSelected = this.selectedSessionKey;
+    const previousActive = this.activeSessionKey;
+
     const sessionKey = this.deriveSessionKey(normalized);
     const now = Date.now();
-    const existing = this.remoteSessions.get(sessionKey);
+    let existingKey = sessionKey;
+    let existing = this.remoteSessions.get(sessionKey);
+    if (!existing && normalized.guid) {
+      const fallbackKey = this.findSessionKeyByGuid(normalized.guid, { excludeKey: sessionKey });
+      if (fallbackKey) {
+        existingKey = fallbackKey;
+        existing = this.remoteSessions.get(fallbackKey);
+      }
+    }
+    if (existing && existingKey && existingKey !== sessionKey) {
+      this.remoteSessions.delete(existingKey);
+      if (this.activeSessionKey === existingKey) this.activeSessionKey = sessionKey;
+      if (this.selectedSessionKey === existingKey) this.selectedSessionKey = sessionKey;
+    }
     const previousStatus = normalizeRemoteStatus(existing?.status);
     const status = normalized.status || 'unknown';
 
@@ -535,6 +608,8 @@ export class OverlayServer {
       session.lastPlayTs = 0;
     }
     if (normalized.guid) session.guid = normalized.guid;
+    const effectivePageUrl = normalized.pageUrl || normalized.songLink || session.pageUrl || '';
+    if (effectivePageUrl) session.pageUrl = normalizeRemoteUrl(effectivePageUrl);
     if (!session.host && normalized.platform) session.host = normalized.platform;
     if (status === 'playing' && previousStatus !== 'playing') {
       session.lastPlayTs = now;
@@ -542,7 +617,6 @@ export class OverlayServer {
 
     this.remoteSessions.set(sessionKey, session);
 
-    const previousSelected = this.selectedSessionKey;
     if (this.selectedSessionKey && !this.remoteSessions.has(this.selectedSessionKey)) {
       this.selectedSessionKey = '';
     }
@@ -553,7 +627,6 @@ export class OverlayServer {
       this.selectedSessionKey = sessionKey;
     }
 
-    const previousActive = this.activeSessionKey;
     const nextActive = this.selectActiveSession();
     this.activeSessionKey = nextActive;
     const activeSession = nextActive ? this.remoteSessions.get(nextActive) : null;
@@ -602,6 +675,7 @@ export class OverlayServer {
         lastPlayTs: session?.lastPlayTs || 0,
         connected: session?.connected !== false,
         guid: session?.guid || info?.guid || '',
+        pageUrl: session?.pageUrl || info?.pageUrl || '',
         nowPlaying: info ? {
           title: info.title || '',
           artists: Array.isArray(info.artists) ? info.artists : [],
