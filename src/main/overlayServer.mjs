@@ -31,6 +31,8 @@ const FONT_WEIGHT_PATTERNS = [
   { regex: /\bblack\b/gi, weight: 900 }
 ];
 const FONT_ITALIC_PATTERNS = [/\bitalic\b/gi, /\boblique\b/gi];
+const REMOTE_PROGRESS_EPSILON_SECONDS = 0.25;
+const REMOTE_STALL_TIME_MS = 1500;
 
 function mergeStyles(currentStyle, patchStyle) {
   const base = (currentStyle && typeof currentStyle === 'object') ? currentStyle : {};
@@ -102,6 +104,44 @@ function normalizeNowPlayingPayload(raw) {
     isLive: raw?.is_live === true,
     receivedAt: Date.now()
   };
+}
+
+function getProgressSeconds(info) {
+  if (!info || typeof info !== 'object') return null;
+  if (Number.isFinite(info.progressSeconds)) return Math.max(0, info.progressSeconds);
+  if (Number.isFinite(info.progressMs)) return Math.max(0, info.progressMs / 1000);
+  return null;
+}
+
+function sanitizeRemoteIdentity(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function sanitizeRemoteName(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function areSameRemoteEntries(prev, next) {
+  if (!prev || !next || typeof prev !== 'object' || typeof next !== 'object') return false;
+  const prevGuid = sanitizeRemoteIdentity(prev.guid);
+  const nextGuid = sanitizeRemoteIdentity(next.guid);
+  if (prevGuid && nextGuid) return prevGuid === nextGuid;
+  const prevSong = sanitizeRemoteIdentity(prev.songLink);
+  const nextSong = sanitizeRemoteIdentity(next.songLink);
+  if (prevSong && nextSong) return prevSong === nextSong;
+  const prevTitle = sanitizeRemoteName(prev.title);
+  const nextTitle = sanitizeRemoteName(next.title);
+  if (!prevTitle || !nextTitle || prevTitle !== nextTitle) return false;
+  const prevPlatform = sanitizeRemoteName(prev.platform);
+  const nextPlatform = sanitizeRemoteName(next.platform);
+  if (prevPlatform && nextPlatform && prevPlatform !== nextPlatform) return false;
+  const joinArtists = (artists) => Array.isArray(artists)
+    ? artists.map((name) => sanitizeRemoteName(name)).filter(Boolean).join('|')
+    : '';
+  const prevArtists = joinArtists(prev.artists);
+  const nextArtists = joinArtists(next.artists);
+  if (prevArtists && nextArtists) return prevArtists === nextArtists;
+  return true;
 }
 function analyseFontName(name) {
   if (typeof name !== 'string') {
@@ -497,6 +537,23 @@ export class OverlayServer {
     const now = Date.now();
     const session = this.remoteSessions.get(sessionKey) || { lastPlayTs: 0, status: 'stopped' };
     const previousStatus = String(session.status || '').toLowerCase();
+    const previousInfo = session.nowPlaying || null;
+    const previousProgress = getProgressSeconds(previousInfo);
+    const nextProgress = getProgressSeconds(normalized);
+    const previousReceivedAt = Number(previousInfo?.receivedAt) || session.lastUpdate || 0;
+    const nextReceivedAt = Number(normalized.receivedAt) || now;
+    const elapsedMs = previousReceivedAt > 0 ? Math.max(0, nextReceivedAt - previousReceivedAt) : 0;
+    if (
+      normalized.status === 'playing' &&
+      previousInfo &&
+      nextProgress != null &&
+      previousProgress != null &&
+      elapsedMs >= REMOTE_STALL_TIME_MS &&
+      Math.abs(nextProgress - previousProgress) <= REMOTE_PROGRESS_EPSILON_SECONDS &&
+      areSameRemoteEntries(previousInfo, normalized)
+    ) {
+      normalized.status = 'paused';
+    }
     session.nowPlaying = normalized;
     session.lastUpdate = now;
     session.status = String(normalized.status || '').toLowerCase();

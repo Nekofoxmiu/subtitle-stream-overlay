@@ -958,6 +958,7 @@ const overlaySync = new OverlaySync(dom.video);
 overlaySync.setNowPlayingHandler(handleRemoteNowPlaying);
 overlaySync.setRemoteSessionsHandler(handleRemoteSessionsUpdate);
 const REMOTE_TIME_EPSILON = 0.25;
+const REMOTE_STALL_TIME_MS = 1500;
 
 function looksLikeNowPlayingPayload(raw) {
   if (!raw || typeof raw !== 'object') return false;
@@ -999,13 +1000,68 @@ function normalizeNowPlayingPayload(raw) {
   };
 }
 
+function getRemoteProgressSeconds(info) {
+  if (!info || typeof info !== 'object') return null;
+  if (Number.isFinite(info.progressSeconds)) return Math.max(0, info.progressSeconds);
+  if (Number.isFinite(info.progressMs)) return Math.max(0, info.progressMs / 1000);
+  return null;
+}
+
+function sanitizeRemoteIdentity(value, { lower = false } = {}) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  return lower ? trimmed.toLowerCase() : trimmed;
+}
+
+function areSameRemoteEntries(prev, next, prevKey = '', nextKey = '') {
+  if (!prev || !next || typeof prev !== 'object' || typeof next !== 'object') return false;
+  if (prevKey && nextKey) return prevKey === nextKey;
+  const prevGuid = sanitizeRemoteIdentity(prev.guid);
+  const nextGuid = sanitizeRemoteIdentity(next.guid);
+  if (prevGuid && nextGuid) return prevGuid === nextGuid;
+  const prevSong = sanitizeRemoteIdentity(prev.songLink);
+  const nextSong = sanitizeRemoteIdentity(next.songLink);
+  if (prevSong && nextSong) return prevSong === nextSong;
+  const prevTitle = sanitizeRemoteIdentity(prev.title, { lower: true });
+  const nextTitle = sanitizeRemoteIdentity(next.title, { lower: true });
+  if (!prevTitle || !nextTitle || prevTitle !== nextTitle) return false;
+  const prevPlatform = sanitizeRemoteIdentity(prev.platform, { lower: true });
+  const nextPlatform = sanitizeRemoteIdentity(next.platform, { lower: true });
+  if (prevPlatform && nextPlatform && prevPlatform !== nextPlatform) return false;
+  const joinArtists = (artists) => Array.isArray(artists)
+    ? artists.map((name) => sanitizeRemoteIdentity(name, { lower: true })).filter(Boolean).join('|')
+    : '';
+  const prevArtists = joinArtists(prev.artists);
+  const nextArtists = joinArtists(next.artists);
+  if (prevArtists && nextArtists) return prevArtists === nextArtists;
+  return true;
+}
+
 function handleRemoteNowPlaying(raw) {
+  const previousInfo = state.remoteNowPlaying;
   const payload = normalizeNowPlayingPayload(raw);
   if (!payload) return;
+  const previousKeyDerived = previousInfo ? getRemoteMediaKey(previousInfo) : '';
+  const derivedKey = getRemoteMediaKey(payload) || '';
+  const sameEntry = areSameRemoteEntries(previousInfo, payload, previousKeyDerived, derivedKey);
+  const previousReceivedAt = Number(previousInfo?.receivedAt) || state.remoteLastUpdate || 0;
+  const nextReceivedAt = Number(payload.receivedAt) || Date.now();
+  if (sameEntry && payload.status === 'playing') {
+    const previousProgress = getRemoteProgressSeconds(previousInfo);
+    const nextProgress = getRemoteProgressSeconds(payload);
+    const elapsedMs = previousReceivedAt > 0 ? Math.max(0, nextReceivedAt - previousReceivedAt) : 0;
+    if (
+      previousProgress != null &&
+      nextProgress != null &&
+      elapsedMs >= REMOTE_STALL_TIME_MS &&
+      Math.abs(nextProgress - previousProgress) <= REMOTE_TIME_EPSILON
+    ) {
+      payload.status = 'paused';
+    }
+  }
   state.remoteNowPlaying = payload;
   if (payload.guid) state.remoteLastGuid = payload.guid;
   state.remoteLastUpdate = payload.receivedAt;
-  const derivedKey = getRemoteMediaKey(payload) || '';
   const previousKey = state.remoteMediaKey || '';
   if (derivedKey) state.remoteMediaKey = derivedKey;
   if (state.useRemoteTimeline) {
@@ -1016,13 +1072,14 @@ function handleRemoteNowPlaying(raw) {
     }
     applyRemoteMediaUiState();
     updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+  }
   updateRemotePlayerUi(payload);
-  startRemoteProgressTimer();
-} else {
-  updateRemotePlayerUi(payload);
-  stopRemoteProgressTimer();
-}
-updateActiveCacheInfo();
+  if (state.useRemoteTimeline && String(payload.status || '').toLowerCase() === 'playing') {
+    startRemoteProgressTimer();
+  } else {
+    stopRemoteProgressTimer();
+  }
+  updateActiveCacheInfo();
 }
 
 function handleRemoteSessionsUpdate(payload = {}) {
