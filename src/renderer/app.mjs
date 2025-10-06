@@ -757,7 +757,6 @@ const state = {
   remoteCoverSource: '',
   remoteCoverAbort: null,
   remoteCoverToken: 0,
-  remoteLiveDurationAnchor: { key: '', baseDuration: null, timestamp: 0, isYoutube: false },
   subtitleOffsetMode: 'advance',
   subtitleOffsetSeconds: 0,
   subtitleOffsetDefaults: { mode: 'advance', seconds: 0 },
@@ -1030,83 +1029,6 @@ function normalizeRemoteUrl(value) {
   }
 }
 
-function resetRemoteLiveDurationAnchor() {
-  state.remoteLiveDurationAnchor = { key: '', baseDuration: null, timestamp: 0, isYoutube: false };
-}
-
-function isYoutubeUrl(value) {
-  if (typeof value !== 'string') return false;
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  let host = '';
-  try {
-    const candidate = trimmed.includes('://') ? trimmed : `https://${trimmed}`;
-    host = new URL(candidate).hostname.toLowerCase();
-  } catch {
-    const lower = trimmed.toLowerCase();
-    return lower.includes('youtube.com') || lower.includes('youtu.be');
-  }
-  if (!host) return false;
-  return host === 'youtu.be'
-    || host === 'youtube.com'
-    || host.endsWith('.youtube.com')
-    || host === 'youtube-nocookie.com'
-    || host.endsWith('.youtube-nocookie.com');
-}
-
-function isYoutubeRemote(info = state.remoteNowPlaying) {
-  if (!info || typeof info !== 'object') return false;
-  const platform = typeof info.platform === 'string' ? info.platform.trim().toLowerCase() : '';
-  if (platform && (platform === 'youtube' || platform === 'yt' || platform.includes('youtube'))) return true;
-  const candidates = [info.pageUrl, info.songLink];
-  return candidates.some((candidate) => isYoutubeUrl(candidate));
-}
-
-function updateRemoteLiveDurationAnchor(info = state.remoteNowPlaying) {
-  if (!info || typeof info !== 'object') {
-    resetRemoteLiveDurationAnchor();
-    return;
-  }
-  const isLive = info.isLive === true;
-  const isYoutube = isLive && isYoutubeRemote(info);
-  if (!isLive || !isYoutube) {
-    if (state.remoteLiveDurationAnchor?.key) {
-      resetRemoteLiveDurationAnchor();
-    }
-    return;
-  }
-  const key = getRemoteMediaKey(info, { includeWhenDisabled: true })
-    || sanitizeRemoteIdentity(info.guid)
-    || '__live__';
-  const baseDuration = Number.isFinite(info.durationSeconds) && info.durationSeconds > 0
-    ? info.durationSeconds
-    : null;
-  const baseProgress = Number.isFinite(info.progressSeconds) && info.progressSeconds >= 0
-    ? info.progressSeconds
-    : null;
-  const baseValue = baseDuration != null ? baseDuration : baseProgress;
-  const timestamp = Number.isFinite(info.receivedAt) ? info.receivedAt : Date.now();
-  const prev = state.remoteLiveDurationAnchor || { key: '', baseDuration: null, timestamp: 0, isYoutube: false };
-  if (!prev.key || prev.key !== key) {
-    state.remoteLiveDurationAnchor = {
-      key,
-      baseDuration: baseValue != null ? baseValue : 0,
-      timestamp,
-      isYoutube: true
-    };
-    return;
-  }
-  const next = { ...prev, isYoutube: true };
-  if (baseValue != null) {
-    const previousBase = Number.isFinite(prev.baseDuration) ? prev.baseDuration : null;
-    if (previousBase == null || baseValue > previousBase + 1) {
-      next.baseDuration = baseValue;
-      next.timestamp = timestamp;
-    }
-  }
-  state.remoteLiveDurationAnchor = next;
-}
-
 function handleRemoteNowPlaying(raw) {
   const payload = normalizeNowPlayingPayload(raw);
   if (!payload) return;
@@ -1118,7 +1040,6 @@ function handleRemoteNowPlaying(raw) {
     ? payload.receivedAt
     : Date.now();
   if (derivedKey) state.remoteMediaKey = derivedKey;
-  updateRemoteLiveDurationAnchor(payload);
   if (state.useRemoteTimeline) {
     const keyChanged = derivedKey && derivedKey !== previousKey;
     applyRemoteTimeline(payload);
@@ -1258,25 +1179,6 @@ function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
   if (progress != null && status === 'playing' && baseTs > 0) {
     const elapsed = Math.max(0, (Date.now() - baseTs) / 1000);
     progress += elapsed;
-    if (isLive && duration != null) {
-      duration += elapsed;
-    }
-  }
-  if (isLive) {
-    const anchor = state.remoteLiveDurationAnchor || null;
-    if (anchor && anchor.isYoutube) {
-      const anchorKey = getRemoteMediaKey(info, { includeWhenDisabled: true })
-        || sanitizeRemoteIdentity(info?.guid)
-        || '__live__';
-      if (anchor.key && anchor.key === anchorKey && Number.isFinite(anchor.timestamp) && anchor.timestamp > 0) {
-        const anchorBase = Number.isFinite(anchor.baseDuration) ? Math.max(0, anchor.baseDuration) : 0;
-        const elapsedSinceAnchor = Math.max(0, (Date.now() - anchor.timestamp) / 1000);
-        const anchoredDuration = anchorBase + elapsedSinceAnchor;
-        if (duration == null || anchoredDuration > duration) {
-          duration = anchoredDuration;
-        }
-      }
-    }
   }
   if (isLive && duration != null && progress != null) {
     duration = Math.max(duration, progress);
@@ -1294,20 +1196,17 @@ function updateRemoteProgressDisplay(info = state.remoteNowPlaying) {
   dom.remoteHudCurrent.textContent = currentText;
   const isLive = info?.isLive === true;
   if (isLive) {
-    const liveDuration = (duration != null && duration > 0)
-      ? duration
-      : (progress != null ? progress : null);
-    dom.remoteHudDuration.textContent = liveDuration != null
-      ? `LIVE ${formatClockTime(liveDuration)}`
-      : 'LIVE';
+    dom.remoteHudDuration.textContent = 'LIVE';
+    dom.remoteHudDuration.setAttribute('aria-label', '直播中 (LIVE)');
     dom.remoteHudDuration.classList.add('is-live');
   } else {
     dom.remoteHudDuration.classList.remove('is-live');
+    dom.remoteHudDuration.removeAttribute('aria-label');
     dom.remoteHudDuration.textContent = (duration != null && duration > 0)
       ? formatClockTime(duration)
       : '--:--';
   }
-  const ratio = (progress != null && duration != null && duration > 0)
+  const ratio = (!isLive && progress != null && duration != null && duration > 0)
     ? Math.min(1, Math.max(0, progress / duration))
     : 0;
   dom.remoteHudProgressFill.style.width = `${(ratio * 100).toFixed(2)}%`;
