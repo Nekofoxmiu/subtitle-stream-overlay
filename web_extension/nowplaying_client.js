@@ -4,7 +4,7 @@ var join_interval = null;
 var hostname = window.location.hostname;
 const FETCH_URL = 'ws://localhost:59837/';
 var join_retry_time = 2000
-var isStopped = false;
+var lastStatus = 'stopped';
 var guid = generateGuid();
 
 function join() {
@@ -49,9 +49,52 @@ function timestamp_to_ms(ts) {
     if (splits.length == 2) {
         return splits[0] * 60 * 1000 + splits[1] * 1000;
     } else if (splits.length == 3) {
-        return splits[0] * 60 * 60 * 1000 + splits[1] * 60 * 1000 + splits[0] * 1000;
+        return splits[0] * 60 * 60 * 1000 + splits[1] * 60 * 1000 + splits[2] * 1000;
     }
     return 0;
+};
+
+function normalizeStatus(status) {
+    if (status === 'playing') {
+        return 'playing';
+    }
+    if (status === null || status === undefined) {
+        return null;
+    }
+
+    const normalized = String(status).toLowerCase();
+    if (normalized === 'playing') {
+        return 'playing';
+    }
+    if (normalized === 'paused' || normalized === 'stopped' || normalized === 'none') {
+        return 'stopped';
+    }
+
+    return null;
+};
+
+function sendPlaybackUpdate(data) {
+    const status = normalizeStatus(data.status);
+    if (!status) {
+        return;
+    }
+
+    if (!conn || conn.readyState !== WebSocket.OPEN) {
+        return;
+    }
+
+    const payload = { ...data, status };
+
+    if (status === 'playing') {
+        lastStatus = 'playing';
+        conn.send(JSON.stringify(payload));
+        return;
+    }
+
+    if (lastStatus !== 'stopped') {
+        lastStatus = 'stopped';
+        conn.send(JSON.stringify(payload));
+    }
 };
 
 function spotifyIsPlaying(el) {
@@ -89,14 +132,7 @@ function start_transfer() {
             if (!title)
                 return;
 
-            if (status == "playing") {
-                isStopped = false;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'soundcloud', is_live: false }));
-            }
-            else if (status == 'stopped' && !isStopped) {
-                isStopped = true;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'soundcloud', is_live: false }));
-            }
+            sendPlaybackUpdate({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'soundcloud', is_live: false });
         } else if (hostname === 'open.spotify.com') {
             let data = navigator.mediaSession;
             const playStatusEl = document.querySelector('button[data-testid="control-button-playpause"]');
@@ -121,14 +157,7 @@ function start_transfer() {
             if (title === '')
                 return;
 
-            if (status == "playing") {
-                isStopped = false;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'spotify', is_live: false }));
-            }
-            else if (status == 'stopped' && !isStopped) {
-                isStopped = true;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'spotify', is_live: false }));
-            }
+            sendPlaybackUpdate({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'spotify', is_live: false });
         } else if (hostname === 'www.youtube.com') {
             if (!navigator.mediaSession.metadata) {
                 return;
@@ -141,35 +170,18 @@ function start_transfer() {
 
             let title, artists, status, duration, progress, cover, song_link, is_live = false;
 
-            // 在看 Short 影片
-            if (window.location.href.indexOf('shorts') != -1) {
-                title = navigator.mediaSession.metadata.title;
+            title = navigator.mediaSession.metadata.title;
 
-                if (!title)
-                    return;
+            if (!title || title === '')
+                return;
 
-                // Short 影片要另外用方法來獲取目前播放進度
-                duration = 100;
-                progress = query('yt-progress-bar > div', e => parseInt(e.getAttribute('aria-valuenow')));
-            }
-            else {
-                title = query('.style-scope.ytd-video-primary-info-renderer', e => {
-                    let t = e.getElementsByClassName('title');
-                    if (t && t.length > 0)
-                        return t[0].innerText;
-                    return "";
-                });
+            duration = query('video', e => e.duration * 1000);
+            progress = query('video', e => e.currentTime * 1000);
 
-                if (!title || title === '')
-                    return;
-
-                duration = query('video', e => e.duration * 1000);
-                progress = query('video', e => e.currentTime * 1000);
-
-                // 檢測觀看的影片是否正在直播中
-                if (document.querySelector('#movie_player > div.ytp-chrome-bottom > div.ytp-chrome-controls > div.ytp-left-controls > div.ytp-time-display.notranslate.ytp-live > button')) {
-                    is_live = true;
-                }
+            // 檢測觀看的影片是否正在直播中
+            if (document.querySelector('#movie_player > div.ytp-chrome-bottom > div.ytp-chrome-controls > div.ytp-left-controls > div.ytp-time-display.notranslate.ytp-live > button')) {
+                is_live = true;
+                duration -= 60 * 60 * 1000; // 直播的 duration 會多一個小時，扣掉
             }
 
             // 改用 mediaSession 來獲取作者資訊
@@ -196,14 +208,12 @@ function start_transfer() {
             title = title.replace("(Original Video)", "");
             title = title.replace("(Original Mix)", "");
 
-            if (status == 'playing' && progress > 0) {
-                isStopped = false;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress: Math.floor(progress), duration, song_link, platform: 'youtube', is_live }));
+            if (status === 'playing' && progress <= 0) {
+                return;
             }
-            else if (status == 'stopped' && !isStopped) {
-                isStopped = true;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress: Math.floor(progress), duration, song_link, platform: 'youtube', is_live }));
-            }
+
+            const flooredProgress = Math.floor(progress);
+            sendPlaybackUpdate({ guid, cover, title, artists, status, progress: flooredProgress, duration, song_link, platform: 'youtube', is_live });
         } else if (hostname === 'music.youtube.com') {
             if (!navigator.mediaSession.metadata)
                 return;
@@ -224,14 +234,7 @@ function start_transfer() {
             let query_link = new URL(query('.ytp-title-link', e => e.getAttribute('href')));
             let song_link = 'https://music.youtube.com/watch?v=' + query_link.searchParams.get('v');
 
-            if (status == 'playing') {
-                isStopped = false;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'youtube_music', is_live: false }));
-            }
-            else if (status == 'stopped' && !isStopped) {
-                isStopped = true;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'youtube_music', is_live: false }));
-            }
+            sendPlaybackUpdate({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'youtube_music', is_live: false });
         }
         else if (hostname === 'www.bilibili.com') {
             if (!navigator.mediaSession.metadata)
@@ -278,14 +281,7 @@ function start_transfer() {
                 console.error('無法取得 Artists 資料');
             }
 
-            if (status == 'playing') {
-                isStopped = false;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'bilibili', is_live: false }));
-            }
-            else if (status == 'stopped' && !isStopped) {
-                isStopped = true;
-                conn.send(JSON.stringify({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'bilibili', is_live: false }));
-            }
+            sendPlaybackUpdate({ guid, cover, title, artists, status, progress, duration, song_link, platform: 'bilibili', is_live: false });
         }
     }, 500);
 }
@@ -298,8 +294,8 @@ if (hostname === 'soundcloud.com' ||
     join();
 };
 
-window.addEventListener('beforeunload', function (e) {
-    if (conn.readyState == WebSocket.OPEN) {
+window.addEventListener('beforeunload', function () {
+    if (conn && conn.readyState === WebSocket.OPEN) {
         conn.send(`closed - ${hostname} (${guid})`);
     }
 });

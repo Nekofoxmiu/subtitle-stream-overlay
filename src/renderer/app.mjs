@@ -957,9 +957,6 @@ class OverlaySync {
 const overlaySync = new OverlaySync(dom.video);
 overlaySync.setNowPlayingHandler(handleRemoteNowPlaying);
 overlaySync.setRemoteSessionsHandler(handleRemoteSessionsUpdate);
-const REMOTE_TIME_EPSILON = 0.25;
-const REMOTE_STALL_TIME_MS = 1500;
-
 function looksLikeNowPlayingPayload(raw) {
   if (!raw || typeof raw !== 'object') return false;
   if (typeof raw.progress === 'number' || typeof raw.progressMs === 'number') return true;
@@ -979,7 +976,7 @@ function normalizeNowPlayingPayload(raw) {
   const durationMs = toPositiveNumber(raw.duration ?? raw.durationMs);
   const clampedProgress = durationMs > 0 ? Math.min(progressMs, durationMs) : progressMs;
   const normalizeStr = (value) => (typeof value === 'string' ? value.trim() : '');
-  const status = normalizeStr(raw.status).toLowerCase() || 'unknown';
+  const status = normalizeRemoteStatus(raw.status);
   const artists = Array.isArray(raw.artists)
     ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
     : [];
@@ -1000,71 +997,32 @@ function normalizeNowPlayingPayload(raw) {
   };
 }
 
-function getRemoteProgressSeconds(info) {
-  if (!info || typeof info !== 'object') return null;
-  if (Number.isFinite(info.progressSeconds)) return Math.max(0, info.progressSeconds);
-  if (Number.isFinite(info.progressMs)) return Math.max(0, info.progressMs / 1000);
-  return null;
-}
-
 function sanitizeRemoteIdentity(value, { lower = false } = {}) {
   if (typeof value !== 'string') return '';
   const trimmed = value.trim();
   return lower ? trimmed.toLowerCase() : trimmed;
 }
 
-function areSameRemoteEntries(prev, next, prevKey = '', nextKey = '') {
-  if (!prev || !next || typeof prev !== 'object' || typeof next !== 'object') return false;
-  if (prevKey && nextKey) return prevKey === nextKey;
-  const prevGuid = sanitizeRemoteIdentity(prev.guid);
-  const nextGuid = sanitizeRemoteIdentity(next.guid);
-  if (prevGuid && nextGuid) return prevGuid === nextGuid;
-  const prevSong = sanitizeRemoteIdentity(prev.songLink);
-  const nextSong = sanitizeRemoteIdentity(next.songLink);
-  if (prevSong && nextSong) return prevSong === nextSong;
-  const prevTitle = sanitizeRemoteIdentity(prev.title, { lower: true });
-  const nextTitle = sanitizeRemoteIdentity(next.title, { lower: true });
-  if (!prevTitle || !nextTitle || prevTitle !== nextTitle) return false;
-  const prevPlatform = sanitizeRemoteIdentity(prev.platform, { lower: true });
-  const nextPlatform = sanitizeRemoteIdentity(next.platform, { lower: true });
-  if (prevPlatform && nextPlatform && prevPlatform !== nextPlatform) return false;
-  const joinArtists = (artists) => Array.isArray(artists)
-    ? artists.map((name) => sanitizeRemoteIdentity(name, { lower: true })).filter(Boolean).join('|')
-    : '';
-  const prevArtists = joinArtists(prev.artists);
-  const nextArtists = joinArtists(next.artists);
-  if (prevArtists && nextArtists) return prevArtists === nextArtists;
-  return true;
+function normalizeRemoteStatus(value) {
+  const normalized = sanitizeRemoteIdentity(value, { lower: true });
+  if (!normalized) return 'unknown';
+  if (normalized === 'playing' || normalized === 'play' || normalized === 'streaming') return 'playing';
+  if (normalized === 'paused' || normalized === 'pause' || normalized === 'pausing' || normalized === 'stopped' || normalized === 'stop' || normalized === 'stopping') return 'paused';
+  if (normalized === 'waiting' || normalized === 'buffering' || normalized === 'loading' || normalized === 'idle' || normalized === 'pending' || normalized === 'queued' || normalized === 'queue' || normalized === 'ready' || normalized === 'connecting') return 'unknown';
+  if (normalized === 'finished' || normalized === 'ending' || normalized === 'ended' || normalized === 'complete' || normalized === 'completed') return 'paused';
+  return normalized;
 }
 
 function handleRemoteNowPlaying(raw) {
-  const previousInfo = state.remoteNowPlaying;
   const payload = normalizeNowPlayingPayload(raw);
   if (!payload) return;
-  const previousKeyDerived = previousInfo ? getRemoteMediaKey(previousInfo) : '';
+  const previousKey = state.remoteMediaKey || '';
   const derivedKey = getRemoteMediaKey(payload) || '';
-  const sameEntry = areSameRemoteEntries(previousInfo, payload, previousKeyDerived, derivedKey);
-  const previousReceivedAt = Number(previousInfo?.receivedAt) || state.remoteLastUpdate || 0;
-  const nextReceivedAt = Number(payload.receivedAt) || Date.now();
-  if (sameEntry && payload.status === 'playing') {
-    const previousProgress = getRemoteProgressSeconds(previousInfo);
-    const nextProgress = getRemoteProgressSeconds(payload);
-    const elapsedMs = previousReceivedAt > 0 ? Math.max(0, nextReceivedAt - previousReceivedAt) : 0;
-    if (
-      previousProgress != null &&
-      nextProgress != null &&
-      elapsedMs >= REMOTE_STALL_TIME_MS &&
-      Math.abs(nextProgress - previousProgress) <= REMOTE_TIME_EPSILON
-    ) {
-      payload.status = 'paused';
-    }
-  }
   state.remoteNowPlaying = payload;
   if (payload.guid) state.remoteLastGuid = payload.guid;
   state.remoteLastUpdate = Number.isFinite(payload.receivedAt)
     ? payload.receivedAt
     : Date.now();
-  const previousKey = state.remoteMediaKey || '';
   if (derivedKey) state.remoteMediaKey = derivedKey;
   if (state.useRemoteTimeline) {
     const keyChanged = derivedKey && derivedKey !== previousKey;
@@ -1084,6 +1042,7 @@ function handleRemoteNowPlaying(raw) {
   }
   updateActiveCacheInfo();
 }
+
 
 function handleRemoteSessionsUpdate(payload = {}) {
   const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
@@ -1180,21 +1139,9 @@ function getRemotePayloadTimestamp(info = state.remoteNowPlaying) {
 
 function getRemotePlaybackStatus(info = state.remoteNowPlaying) {
   if (!info || typeof info !== 'object') return 'unknown';
-  const status = String(info.status || '').toLowerCase();
-  if (status === 'playing') {
-    const receivedAt = getRemotePayloadTimestamp(info);
-    if (receivedAt > 0) {
-      const staleFor = Date.now() - receivedAt;
-      if (staleFor >= REMOTE_STALL_TIME_MS) {
-        return 'paused';
-      }
-    }
-    return 'playing';
-  }
-  if (status === 'paused') return 'paused';
-  if (status === 'stopped') return 'stopped';
-  return status || 'unknown';
+  return normalizeRemoteStatus(info.status);
 }
+
 
 function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
   if (!info || typeof info !== 'object') {
@@ -1246,7 +1193,7 @@ function getRemoteStatusLabel(info = state.remoteNowPlaying) {
   const isLive = info.isLive === true;
   if (status === 'playing') return isLive ? '直播中' : '播放中';
   if (status === 'paused') return isLive ? '直播暫停' : '已暫停';
-  if (status === 'stopped') return isLive ? '直播結束' : '已停止';
+  if (status === 'unknown') return isLive ? '直播結束' : '已停止';
   return info.title || info.artists?.length ? '已連線' : '等待播放';
 }
 
@@ -1275,7 +1222,7 @@ function updateRemotePlayerUi(info = state.remoteNowPlaying) {
   const status = getRemotePlaybackStatus(remote);
   dom.remoteHud.classList.toggle('is-playing', status === 'playing');
   dom.remoteHud.classList.toggle('is-paused', status === 'paused');
-  dom.remoteHud.classList.toggle('is-stopped', !status || status === 'stopped');
+  dom.remoteHud.classList.toggle('is-stopped', !status || status === 'unknown');
 
   updateRemoteProgressDisplay(remote);
 }
@@ -2691,7 +2638,7 @@ function normalizeRemoteSession(raw) {
   const key = typeof raw.key === 'string' ? raw.key.trim() : '';
   if (!key) return null;
   const host = typeof raw.host === 'string' ? raw.host : '';
-  const status = typeof raw.status === 'string' ? raw.status.trim().toLowerCase() : 'unknown';
+  const status = normalizeRemoteStatus(raw.status);
   const lastUpdateRaw = Number(raw.lastUpdate);
   const lastUpdate = Number.isFinite(lastUpdateRaw) ? lastUpdateRaw : 0;
   const lastPlayTsRaw = Number(raw.lastPlayTs);
@@ -2705,16 +2652,14 @@ function normalizeRemoteSession(raw) {
     nowPlaying = {
       title: typeof raw.nowPlaying.title === 'string' ? raw.nowPlaying.title : '',
       artists,
-      status: typeof raw.nowPlaying.status === 'string'
-        ? raw.nowPlaying.status.trim().toLowerCase()
-        : status,
+      status: normalizeRemoteStatus(raw.nowPlaying.status || status),
       songLink: typeof raw.nowPlaying.songLink === 'string' ? raw.nowPlaying.songLink : '',
       platform: typeof raw.nowPlaying.platform === 'string' ? raw.nowPlaying.platform : '',
       isLive: raw.nowPlaying.isLive === true
     };
   }
-  const resolvedStatus = (nowPlaying?.status || status || 'unknown').toLowerCase();
-  if (resolvedStatus === 'stopped') return null;
+  const resolvedStatus = normalizeRemoteStatus(nowPlaying?.status || status || 'unknown');
+  if (resolvedStatus === 'unknown') return null;
   const searchParts = [key, host];
   if (nowPlaying) {
     if (nowPlaying.title) searchParts.push(nowPlaying.title);
