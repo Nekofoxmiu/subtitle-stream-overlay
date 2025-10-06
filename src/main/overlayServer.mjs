@@ -32,7 +32,7 @@ const FONT_WEIGHT_PATTERNS = [
 ];
 const FONT_ITALIC_PATTERNS = [/\bitalic\b/gi, /\boblique\b/gi];
 const REMOTE_PROGRESS_EPSILON_SECONDS = 0.25;
-const REMOTE_STALL_TIME_MS = 1500;
+const REMOTE_STALL_TIME_MS = 1000 * 60 * 2; // 2 minutes
 
 function mergeStyles(currentStyle, patchStyle) {
   const base = (currentStyle && typeof currentStyle === 'object') ? currentStyle : {};

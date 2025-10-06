@@ -958,7 +958,7 @@ const overlaySync = new OverlaySync(dom.video);
 overlaySync.setNowPlayingHandler(handleRemoteNowPlaying);
 overlaySync.setRemoteSessionsHandler(handleRemoteSessionsUpdate);
 const REMOTE_TIME_EPSILON = 0.25;
-const REMOTE_STALL_TIME_MS = 1500;
+const REMOTE_STALL_TIME_MS = 1000 * 60 * 2; // 2 minutes
 
 function looksLikeNowPlayingPayload(raw) {
   if (!raw || typeof raw !== 'object') return false;
@@ -2745,10 +2745,11 @@ function formatRemoteSessionOptionLabel(session) {
   const platform = nowPlaying?.platform || '';
   const statusSource = nowPlaying?.status || session.status;
   const parts = [];
-  if (host) parts.push(host);
   if (title) parts.push(title);
+  if (host) parts.push(host);
   else if (artists) parts.push(artists);
   let label = parts.length ? parts.join(' · ') : (platform || session.key);
+  /*
   const statusLabel = getRemoteStatusLabel({
     status: statusSource,
     isLive: nowPlaying?.isLive,
@@ -2758,6 +2759,7 @@ function formatRemoteSessionOptionLabel(session) {
   if (statusLabel) {
     label += `（${statusLabel}）`;
   }
+  */
   return label;
 }
 
