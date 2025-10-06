@@ -1166,17 +1166,27 @@ function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
   const progressBase = Number.isFinite(info.progressSeconds)
     ? info.progressSeconds
     : (Number.isFinite(info.progressMs) ? info.progressMs / 1000 : null);
-  const duration = Number.isFinite(info.durationSeconds)
+  let duration = Number.isFinite(info.durationSeconds)
     ? Math.max(0, info.durationSeconds)
     : (Number.isFinite(info.durationMs) ? Math.max(0, info.durationMs / 1000) : null);
   let progress = progressBase != null ? Math.max(0, progressBase) : null;
   const status = getRemotePlaybackStatus(info);
   const baseTs = getRemotePayloadTimestamp(info);
+  const isLive = info?.isLive === true;
+  if (isLive && (duration == null || duration <= 0)) {
+    duration = progress != null ? progress : null;
+  }
   if (progress != null && status === 'playing' && baseTs > 0) {
     const elapsed = Math.max(0, (Date.now() - baseTs) / 1000);
     progress += elapsed;
+    if (isLive && duration != null) {
+      duration += elapsed;
+    }
   }
-  if (progress != null && duration != null && duration > 0) {
+  if (isLive && duration != null && progress != null) {
+    duration = Math.max(duration, progress);
+  }
+  if (!isLive && progress != null && duration != null && duration > 0) {
     progress = Math.min(progress, duration);
   }
   return { progress, duration };
@@ -1189,7 +1199,12 @@ function updateRemoteProgressDisplay(info = state.remoteNowPlaying) {
   dom.remoteHudCurrent.textContent = currentText;
   const isLive = info?.isLive === true;
   if (isLive) {
-    dom.remoteHudDuration.textContent = 'LIVE';
+    const liveDuration = (duration != null && duration > 0)
+      ? duration
+      : (progress != null ? progress : null);
+    dom.remoteHudDuration.textContent = liveDuration != null
+      ? `LIVE ${formatClockTime(liveDuration)}`
+      : 'LIVE';
     dom.remoteHudDuration.classList.add('is-live');
   } else {
     dom.remoteHudDuration.classList.remove('is-live');
