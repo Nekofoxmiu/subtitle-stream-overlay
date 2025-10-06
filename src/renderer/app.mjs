@@ -984,6 +984,7 @@ function normalizeNowPlayingPayload(raw) {
     ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
     : [];
   return {
+    sessionKey: normalizeStr(raw.sessionKey || raw.session_key),
     guid: normalizeStr(raw.guid),
     cover: normalizeStr(raw.cover),
     title: normalizeStr(raw.title),
@@ -1041,9 +1042,24 @@ function handleRemoteNowPlaying(raw) {
   const previousInfo = state.remoteNowPlaying;
   const payload = normalizeNowPlayingPayload(raw);
   if (!payload) return;
+  const payloadSessionKey = sanitizeRemoteIdentity(payload.sessionKey);
+  if (payloadSessionKey) {
+    payload.sessionKey = payloadSessionKey;
+  }
+  const selectedSessionKey = sanitizeRemoteIdentity(state.remoteSelectedKey);
+  if (selectedSessionKey && payloadSessionKey && selectedSessionKey !== payloadSessionKey) {
+    return;
+  }
+  if (!selectedSessionKey && payloadSessionKey && sanitizeRemoteIdentity(state.remoteActiveSessionKey) !== payloadSessionKey) {
+    state.remoteActiveSessionKey = payloadSessionKey;
+    if (state.useRemoteTimeline) {
+      updateVideoCacheSelect(payloadSessionKey);
+    }
+  }
   const previousKeyDerived = previousInfo ? getRemoteMediaKey(previousInfo) : '';
   const derivedKey = getRemoteMediaKey(payload) || '';
-  const sameEntry = areSameRemoteEntries(previousInfo, payload, previousKeyDerived, derivedKey);
+  const previousSessionKey = sanitizeRemoteIdentity(previousInfo?.sessionKey);
+  const sameEntry = areSameRemoteEntries(previousInfo, payload, previousSessionKey || previousKeyDerived, payloadSessionKey || derivedKey);
   const previousReceivedAt = Number(previousInfo?.receivedAt) || state.remoteLastUpdate || 0;
   const nextReceivedAt = Number(payload.receivedAt) || Date.now();
   if (sameEntry && payload.status === 'playing') {
@@ -2699,10 +2715,14 @@ function normalizeRemoteSession(raw) {
   const connected = raw.connected !== false;
   let nowPlaying = null;
   if (raw.nowPlaying && typeof raw.nowPlaying === 'object') {
+    const rawSessionKey = typeof raw.nowPlaying.sessionKey === 'string'
+      ? raw.nowPlaying.sessionKey
+      : (typeof raw.nowPlaying.session_key === 'string' ? raw.nowPlaying.session_key : '');
     const artists = Array.isArray(raw.nowPlaying.artists)
       ? raw.nowPlaying.artists.map((name) => (typeof name === 'string' ? name.trim() : '')).filter(Boolean)
       : [];
     nowPlaying = {
+      sessionKey: rawSessionKey ? rawSessionKey.trim() : key,
       title: typeof raw.nowPlaying.title === 'string' ? raw.nowPlaying.title : '',
       artists,
       status: typeof raw.nowPlaying.status === 'string'
@@ -2745,11 +2765,10 @@ function formatRemoteSessionOptionLabel(session) {
   const platform = nowPlaying?.platform || '';
   const statusSource = nowPlaying?.status || session.status;
   const parts = [];
-  if (title) parts.push(title);
   if (host) parts.push(host);
+  if (title) parts.push(title);
   else if (artists) parts.push(artists);
   let label = parts.length ? parts.join(' · ') : (platform || session.key);
-  /*
   const statusLabel = getRemoteStatusLabel({
     status: statusSource,
     isLive: nowPlaying?.isLive,
@@ -2759,7 +2778,6 @@ function formatRemoteSessionOptionLabel(session) {
   if (statusLabel) {
     label += `（${statusLabel}）`;
   }
-  */
   return label;
 }
 

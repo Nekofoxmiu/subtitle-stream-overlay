@@ -542,6 +542,8 @@ export class OverlayServer {
     const nextProgress = getProgressSeconds(normalized);
     const previousReceivedAt = Number(previousInfo?.receivedAt) || session.lastUpdate || 0;
     const nextReceivedAt = Number(normalized.receivedAt) || now;
+    const normalizedWithKey = { ...normalized, sessionKey };
+    const sameEntry = areSameRemoteEntries(previousInfo, normalizedWithKey);
     const elapsedMs = previousReceivedAt > 0 ? Math.max(0, nextReceivedAt - previousReceivedAt) : 0;
     if (
       normalized.status === 'playing' &&
@@ -550,13 +552,14 @@ export class OverlayServer {
       previousProgress != null &&
       elapsedMs >= REMOTE_STALL_TIME_MS &&
       Math.abs(nextProgress - previousProgress) <= REMOTE_PROGRESS_EPSILON_SECONDS &&
-      areSameRemoteEntries(previousInfo, normalized)
+      sameEntry
     ) {
       normalized.status = 'paused';
+      normalizedWithKey.status = 'paused';
     }
-    session.nowPlaying = normalized;
+    session.nowPlaying = normalizedWithKey;
     session.lastUpdate = now;
-    session.status = String(normalized.status || '').toLowerCase();
+    session.status = String(normalizedWithKey.status || '').toLowerCase();
     if (session.status === 'playing' && previousStatus !== 'playing') {
       session.lastPlayTs = now;
     }
@@ -616,6 +619,7 @@ export class OverlayServer {
         connected: session?.connected !== false,
         guid: session?.guid || info?.guid || '',
         nowPlaying: info ? {
+          sessionKey: info.sessionKey || key,
           title: info.title || '',
           artists: Array.isArray(info.artists) ? info.artists : [],
           status: info.status || '',
