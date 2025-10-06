@@ -753,6 +753,7 @@ const state = {
   remoteLastUpdate: 0,
   remoteMediaKey: '',
   remoteProgressTimer: null,
+  remoteSessionNowPlaying: new Map(),
   remoteCoverObjectUrl: '',
   remoteCoverSource: '',
   remoteCoverAbort: null,
@@ -1008,6 +1009,88 @@ function getRemoteProgressSeconds(info) {
   return null;
 }
 
+function upsertRemoteSessionSnapshot(sessionKey, payload) {
+  const key = sanitizeRemoteIdentity(sessionKey || payload?.sessionKey);
+  if (!key || !payload || typeof payload !== 'object') return { key: '', entry: null };
+  let entry = state.remoteSessionNowPlaying.get(key) || null;
+  if (entry && entry !== payload) {
+    Object.assign(entry, payload, { sessionKey: key });
+  } else if (!entry) {
+    entry = payload;
+    entry.sessionKey = key;
+    state.remoteSessionNowPlaying.set(key, entry);
+  }
+  return { key, entry };
+}
+
+function pruneRemoteSessionSnapshots(validKeys = []) {
+  if (!Array.isArray(validKeys) || !validKeys.length) return;
+  const allow = new Set(validKeys.map((key) => sanitizeRemoteIdentity(key)).filter(Boolean));
+  if (!allow.size) return;
+  for (const key of Array.from(state.remoteSessionNowPlaying.keys())) {
+    if (allow.has(key)) continue;
+    state.remoteSessionNowPlaying.delete(key);
+  }
+}
+
+function commitRemoteNowPlaying(payload, { derivedKeyHint = '' } = {}) {
+  if (!payload || typeof payload !== 'object') return;
+  const info = payload;
+  const payloadSessionKey = sanitizeRemoteIdentity(info.sessionKey);
+  const previousInfo = state.remoteNowPlaying;
+  const previousSessionKey = sanitizeRemoteIdentity(previousInfo?.sessionKey);
+  const previousKeyDerived = previousInfo ? getRemoteMediaKey(previousInfo) : '';
+  const derivedKey = derivedKeyHint || getRemoteMediaKey(info) || '';
+  const sameEntry = areSameRemoteEntries(
+    previousInfo,
+    info,
+    previousSessionKey || previousKeyDerived,
+    payloadSessionKey || derivedKey
+  );
+  const previousReceivedAt = Number(previousInfo?.receivedAt) || state.remoteLastUpdate || 0;
+  const nextReceivedAt = Number(info.receivedAt) || Date.now();
+  if (
+    sameEntry &&
+    info.status === 'playing'
+  ) {
+    const previousProgress = getRemoteProgressSeconds(previousInfo);
+    const nextProgress = getRemoteProgressSeconds(info);
+    const elapsedMs = previousReceivedAt > 0 ? Math.max(0, nextReceivedAt - previousReceivedAt) : 0;
+    if (
+      previousProgress != null &&
+      nextProgress != null &&
+      elapsedMs >= REMOTE_STALL_TIME_MS &&
+      Math.abs(nextProgress - previousProgress) <= REMOTE_TIME_EPSILON
+    ) {
+      info.status = 'paused';
+    }
+  }
+  state.remoteNowPlaying = info;
+  if (info.guid) state.remoteLastGuid = info.guid;
+  state.remoteLastUpdate = Number.isFinite(info.receivedAt)
+    ? info.receivedAt
+    : Date.now();
+  const previousKey = state.remoteMediaKey || '';
+  if (derivedKey) state.remoteMediaKey = derivedKey;
+  if (state.useRemoteTimeline) {
+    const keyChanged = derivedKey && derivedKey !== previousKey;
+    applyRemoteTimeline(info);
+    if (keyChanged && state.activeSubsId) {
+      applySubtitleOffsetForSelection({ subsId: state.activeSubsId, notify: true });
+    }
+    applyRemoteMediaUiState();
+    updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+  }
+  updateRemotePlayerUi(info);
+  const effectiveStatus = getRemotePlaybackStatus(info);
+  if (state.useRemoteTimeline && effectiveStatus === 'playing') {
+    startRemoteProgressTimer();
+  } else {
+    stopRemoteProgressTimer();
+  }
+  updateActiveCacheInfo();
+}
+
 function sanitizeRemoteIdentity(value, { lower = false } = {}) {
   if (typeof value !== 'string') return '';
   const trimmed = value.trim();
@@ -1039,66 +1122,32 @@ function areSameRemoteEntries(prev, next, prevKey = '', nextKey = '') {
 }
 
 function handleRemoteNowPlaying(raw) {
-  const previousInfo = state.remoteNowPlaying;
   const payload = normalizeNowPlayingPayload(raw);
   if (!payload) return;
-  const payloadSessionKey = sanitizeRemoteIdentity(payload.sessionKey);
-  if (payloadSessionKey) {
-    payload.sessionKey = payloadSessionKey;
-  }
   const selectedSessionKey = sanitizeRemoteIdentity(state.remoteSelectedKey);
-  if (selectedSessionKey && payloadSessionKey && selectedSessionKey !== payloadSessionKey) {
+  const activeSessionKey = sanitizeRemoteIdentity(state.remoteActiveSessionKey);
+  const payloadSessionKey = sanitizeRemoteIdentity(payload.sessionKey);
+  const derivedKey = getRemoteMediaKey(payload) || '';
+  let canonicalKey = payloadSessionKey || derivedKey || '';
+  let snapshot = payload;
+  if (canonicalKey) {
+    payload.sessionKey = canonicalKey;
+    const { key: storedKey, entry } = upsertRemoteSessionSnapshot(canonicalKey, payload);
+    if (storedKey) canonicalKey = storedKey;
+    if (entry) snapshot = entry;
+  }
+  let trackedSessionKey = selectedSessionKey || activeSessionKey;
+  if (!selectedSessionKey && canonicalKey && (!activeSessionKey || activeSessionKey === canonicalKey)) {
+    state.remoteActiveSessionKey = canonicalKey;
+    trackedSessionKey = canonicalKey;
+    if (state.useRemoteTimeline) {
+      updateVideoCacheSelect(canonicalKey);
+    }
+  }
+  if (trackedSessionKey && canonicalKey && trackedSessionKey !== canonicalKey) {
     return;
   }
-  if (!selectedSessionKey && payloadSessionKey && sanitizeRemoteIdentity(state.remoteActiveSessionKey) !== payloadSessionKey) {
-    state.remoteActiveSessionKey = payloadSessionKey;
-    if (state.useRemoteTimeline) {
-      updateVideoCacheSelect(payloadSessionKey);
-    }
-  }
-  const previousKeyDerived = previousInfo ? getRemoteMediaKey(previousInfo) : '';
-  const derivedKey = getRemoteMediaKey(payload) || '';
-  const previousSessionKey = sanitizeRemoteIdentity(previousInfo?.sessionKey);
-  const sameEntry = areSameRemoteEntries(previousInfo, payload, previousSessionKey || previousKeyDerived, payloadSessionKey || derivedKey);
-  const previousReceivedAt = Number(previousInfo?.receivedAt) || state.remoteLastUpdate || 0;
-  const nextReceivedAt = Number(payload.receivedAt) || Date.now();
-  if (sameEntry && payload.status === 'playing') {
-    const previousProgress = getRemoteProgressSeconds(previousInfo);
-    const nextProgress = getRemoteProgressSeconds(payload);
-    const elapsedMs = previousReceivedAt > 0 ? Math.max(0, nextReceivedAt - previousReceivedAt) : 0;
-    if (
-      previousProgress != null &&
-      nextProgress != null &&
-      elapsedMs >= REMOTE_STALL_TIME_MS &&
-      Math.abs(nextProgress - previousProgress) <= REMOTE_TIME_EPSILON
-    ) {
-      payload.status = 'paused';
-    }
-  }
-  state.remoteNowPlaying = payload;
-  if (payload.guid) state.remoteLastGuid = payload.guid;
-  state.remoteLastUpdate = Number.isFinite(payload.receivedAt)
-    ? payload.receivedAt
-    : Date.now();
-  const previousKey = state.remoteMediaKey || '';
-  if (derivedKey) state.remoteMediaKey = derivedKey;
-  if (state.useRemoteTimeline) {
-    const keyChanged = derivedKey && derivedKey !== previousKey;
-    applyRemoteTimeline(payload);
-    if (keyChanged && state.activeSubsId) {
-      applySubtitleOffsetForSelection({ subsId: state.activeSubsId, notify: true });
-    }
-    applyRemoteMediaUiState();
-    updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
-  }
-  updateRemotePlayerUi(payload);
-  const effectiveStatus = getRemotePlaybackStatus(payload);
-  if (state.useRemoteTimeline && effectiveStatus === 'playing') {
-    startRemoteProgressTimer();
-  } else {
-    stopRemoteProgressTimer();
-  }
-  updateActiveCacheInfo();
+  commitRemoteNowPlaying(snapshot, { derivedKeyHint: derivedKey });
 }
 
 function handleRemoteSessionsUpdate(payload = {}) {
@@ -1130,9 +1179,52 @@ function handleRemoteSessionsUpdate(payload = {}) {
   const selectedKey = typeof payload.selectedKey === 'string' ? payload.selectedKey : '';
   state.remoteActiveSessionKey = normalized.some((session) => session.key === activeKey) ? activeKey : '';
   state.remoteSelectedKey = normalized.some((session) => session.key === selectedKey) ? selectedKey : '';
+  if (!normalized.length) {
+    state.remoteSessionNowPlaying.clear();
+  } else {
+    const allowedKeys = [];
+    for (const session of normalized) {
+      allowedKeys.push(session.key);
+      if (session.nowPlaying?.sessionKey) {
+        allowedKeys.push(session.nowPlaying.sessionKey);
+      }
+    }
+    pruneRemoteSessionSnapshots(allowedKeys);
+    for (const session of normalized) {
+      if (!session.nowPlaying) continue;
+      const snapshot = normalizeNowPlayingPayload({
+        sessionKey: session.nowPlaying.sessionKey || session.key,
+        status: session.nowPlaying.status,
+        title: session.nowPlaying.title,
+        artists: session.nowPlaying.artists,
+        progressMs: session.nowPlaying.progressMs ?? (Number.isFinite(session.nowPlaying.progressSeconds)
+          ? session.nowPlaying.progressSeconds * 1000
+          : undefined),
+        durationMs: session.nowPlaying.durationMs ?? (Number.isFinite(session.nowPlaying.durationSeconds)
+          ? session.nowPlaying.durationSeconds * 1000
+          : undefined),
+        song_link: session.nowPlaying.songLink,
+        platform: session.nowPlaying.platform,
+        is_live: session.nowPlaying.isLive,
+        guid: session.nowPlaying.guid || session.guid || ''
+      });
+      if (!snapshot) continue;
+      snapshot.receivedAt = Number.isFinite(session.nowPlaying.receivedAt)
+        ? session.nowPlaying.receivedAt
+        : (Number.isFinite(session.lastUpdate) ? session.lastUpdate : Date.now());
+      upsertRemoteSessionSnapshot(session.nowPlaying.sessionKey || session.key, snapshot);
+    }
+  }
   if (state.useRemoteTimeline) {
     const targetKey = state.remoteSelectedKey || state.remoteActiveSessionKey || '';
     updateVideoCacheSelect(targetKey);
+  }
+  const trackedKey = sanitizeRemoteIdentity(state.remoteSelectedKey || state.remoteActiveSessionKey);
+  if (trackedKey) {
+    const snapshot = state.remoteSessionNowPlaying.get(trackedKey);
+    if (snapshot) {
+      commitRemoteNowPlaying(snapshot);
+    }
   }
 }
 
@@ -2721,6 +2813,11 @@ function normalizeRemoteSession(raw) {
     const artists = Array.isArray(raw.nowPlaying.artists)
       ? raw.nowPlaying.artists.map((name) => (typeof name === 'string' ? name.trim() : '')).filter(Boolean)
       : [];
+    const progressMsRaw = Number(raw.nowPlaying.progressMs ?? raw.nowPlaying.progress_ms);
+    const progressSecondsRaw = Number(raw.nowPlaying.progressSeconds ?? raw.nowPlaying.progress_seconds);
+    const durationMsRaw = Number(raw.nowPlaying.durationMs ?? raw.nowPlaying.duration_ms);
+    const durationSecondsRaw = Number(raw.nowPlaying.durationSeconds ?? raw.nowPlaying.duration_seconds);
+    const receivedAtRaw = Number(raw.nowPlaying.receivedAt ?? raw.lastUpdate ?? 0);
     nowPlaying = {
       sessionKey: rawSessionKey ? rawSessionKey.trim() : key,
       title: typeof raw.nowPlaying.title === 'string' ? raw.nowPlaying.title : '',
@@ -2730,7 +2827,17 @@ function normalizeRemoteSession(raw) {
         : status,
       songLink: typeof raw.nowPlaying.songLink === 'string' ? raw.nowPlaying.songLink : '',
       platform: typeof raw.nowPlaying.platform === 'string' ? raw.nowPlaying.platform : '',
-      isLive: raw.nowPlaying.isLive === true
+      isLive: raw.nowPlaying.isLive === true,
+      progressMs: Number.isFinite(progressMsRaw) ? Math.max(0, progressMsRaw) : null,
+      progressSeconds: Number.isFinite(progressSecondsRaw)
+        ? Math.max(0, progressSecondsRaw)
+        : (Number.isFinite(progressMsRaw) ? Math.max(0, progressMsRaw / 1000) : null),
+      durationMs: Number.isFinite(durationMsRaw) ? Math.max(0, durationMsRaw) : null,
+      durationSeconds: Number.isFinite(durationSecondsRaw)
+        ? Math.max(0, durationSecondsRaw)
+        : (Number.isFinite(durationMsRaw) ? Math.max(0, durationMsRaw / 1000) : null),
+      receivedAt: Number.isFinite(receivedAtRaw) ? receivedAtRaw : 0,
+      guid: typeof raw.nowPlaying.guid === 'string' ? raw.nowPlaying.guid.trim() : ''
     };
   }
   const resolvedStatus = (nowPlaying?.status || status || 'unknown').toLowerCase();
@@ -2850,6 +2957,10 @@ function handleVideoCacheSelectChange() {
   if (state.useRemoteTimeline) {
     state.remoteSelectedKey = id;
     overlaySync.setActiveSessionKey(id);
+    const snapshot = state.remoteSessionNowPlaying.get(sanitizeRemoteIdentity(id));
+    if (snapshot) {
+      commitRemoteNowPlaying(snapshot);
+    }
     refreshCustomSelect(dom.videoCacheSelect);
     return;
   }

@@ -90,6 +90,7 @@ function normalizeNowPlayingPayload(raw) {
     ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
     : [];
   return {
+    sessionKey: normalizeStr(raw?.sessionKey ?? raw?.session_key),
     guid: normalizeStr(raw?.guid),
     cover: normalizeStr(raw?.cover),
     title: normalizeStr(raw?.title),
@@ -470,6 +471,13 @@ export class OverlayServer {
   }
   deriveSessionKey(payload) {
     if (!payload || typeof payload !== 'object') return 'unknown';
+    const existing = sanitizeRemoteIdentity(payload.sessionKey);
+    if (existing) {
+      if (this.remoteSessions.has(existing)) return existing;
+      const prefixed = existing.startsWith('guid:') ? existing : `guid:${existing}`;
+      if (this.remoteSessions.has(prefixed)) return prefixed;
+      return existing;
+    }
     if (payload.guid) return `guid:${payload.guid}`;
     if (payload.songLink) return `song:${payload.songLink}`;
     const platform = typeof payload.platform === 'string' ? payload.platform.trim().toLowerCase() : '';
@@ -624,10 +632,14 @@ export class OverlayServer {
           artists: Array.isArray(info.artists) ? info.artists : [],
           status: info.status || '',
           progressMs: info.progressMs ?? null,
+          progressSeconds: info.progressSeconds ?? null,
           durationMs: info.durationMs ?? null,
+          durationSeconds: info.durationSeconds ?? null,
+          receivedAt: info.receivedAt ?? session?.lastUpdate ?? 0,
           songLink: info.songLink || '',
           platform: info.platform || '',
-          isLive: info.isLive === true
+          isLive: info.isLive === true,
+          guid: info.guid || ''
         } : null
       });
     }
