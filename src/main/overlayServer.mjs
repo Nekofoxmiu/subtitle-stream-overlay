@@ -31,6 +31,8 @@ const FONT_WEIGHT_PATTERNS = [
   { regex: /\bblack\b/gi, weight: 900 }
 ];
 const FONT_ITALIC_PATTERNS = [/\bitalic\b/gi, /\boblique\b/gi];
+const REMOTE_PROGRESS_EPSILON_SECONDS = 0.25;
+const REMOTE_STALL_TIME_MS = 1500;
 
 function mergeStyles(currentStyle, patchStyle) {
   const base = (currentStyle && typeof currentStyle === 'object') ? currentStyle : {};
@@ -102,6 +104,44 @@ function normalizeNowPlayingPayload(raw) {
     isLive: raw?.is_live === true,
     receivedAt: Date.now()
   };
+}
+
+function getProgressSeconds(info) {
+  if (!info || typeof info !== 'object') return null;
+  if (Number.isFinite(info.progressSeconds)) return Math.max(0, info.progressSeconds);
+  if (Number.isFinite(info.progressMs)) return Math.max(0, info.progressMs / 1000);
+  return null;
+}
+
+function sanitizeRemoteIdentity(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function sanitizeRemoteName(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function areSameRemoteEntries(prev, next) {
+  if (!prev || !next || typeof prev !== 'object' || typeof next !== 'object') return false;
+  const prevGuid = sanitizeRemoteIdentity(prev.guid);
+  const nextGuid = sanitizeRemoteIdentity(next.guid);
+  if (prevGuid && nextGuid) return prevGuid === nextGuid;
+  const prevSong = sanitizeRemoteIdentity(prev.songLink);
+  const nextSong = sanitizeRemoteIdentity(next.songLink);
+  if (prevSong && nextSong) return prevSong === nextSong;
+  const prevTitle = sanitizeRemoteName(prev.title);
+  const nextTitle = sanitizeRemoteName(next.title);
+  if (!prevTitle || !nextTitle || prevTitle !== nextTitle) return false;
+  const prevPlatform = sanitizeRemoteName(prev.platform);
+  const nextPlatform = sanitizeRemoteName(next.platform);
+  if (prevPlatform && nextPlatform && prevPlatform !== nextPlatform) return false;
+  const joinArtists = (artists) => Array.isArray(artists)
+    ? artists.map((name) => sanitizeRemoteName(name)).filter(Boolean).join('|')
+    : '';
+  const prevArtists = joinArtists(prev.artists);
+  const nextArtists = joinArtists(next.artists);
+  if (prevArtists && nextArtists) return prevArtists === nextArtists;
+  return true;
 }
 function analyseFontName(name) {
   if (typeof name !== 'string') {
@@ -248,6 +288,7 @@ export class OverlayServer {
     };
     this.remoteSessions = new Map();
     this.activeSessionKey = '';
+    this.selectedSessionKey = '';
     this.nowPlaying = null;
 
     this.app = express();
@@ -347,6 +388,7 @@ export class OverlayServer {
       if (this.nowPlaying) {
         try { ws.send(JSON.stringify({ type: 'nowPlaying', payload: this.nowPlaying })); } catch { /* noop */ }
       }
+      this.sendRemoteSessions(ws);
       ws.on('message', msg => {
         let data = msg;
         if (Buffer.isBuffer(data)) {
@@ -362,13 +404,22 @@ export class OverlayServer {
         const trimmed = data.trim();
         if (!trimmed) return;
         const firstChar = trimmed[0];
-        if (firstChar !== '{' && firstChar !== '[') return;
+        if (firstChar !== '{' && firstChar !== '[') {
+          if (trimmed.startsWith('connected')) {
+            this.handleRemoteClientHandshake(trimmed, { closed: false });
+          } else if (trimmed.startsWith('closed')) {
+            this.handleRemoteClientHandshake(trimmed, { closed: true });
+          }
+          return;
+        }
         let parsed;
         try { parsed = JSON.parse(trimmed); } catch { return; }
         if (!parsed || typeof parsed !== 'object') return;
         const { type, payload } = parsed;
         if (type === 'setTime') {
           this.broadcast({ type: 'setTime', payload });
+        } else if (type === 'setActiveSession') {
+          this.setActiveSessionKey(payload?.key);
         } else if (type === 'nowPlaying' && payload) {
           this.updateNowPlaying(payload);
         } else if (looksLikeNowPlayingPayload(parsed)) {
@@ -376,6 +427,46 @@ export class OverlayServer {
         }
       });
     });
+  }
+  handleRemoteClientHandshake(message, { closed = false } = {}) {
+    const match = /^(?:connected|closed)\s*-\s*(.+)\s*\(([^)]+)\)\s*$/i.exec(message);
+    if (!match) return;
+    const host = (match[1] || '').trim();
+    const guid = (match[2] || '').trim();
+    if (!guid) return;
+    const key = `guid:${guid}`;
+    const now = Date.now();
+    if (closed) {
+      const session = this.remoteSessions.get(key);
+      if (!session) return;
+      const wasActive = this.activeSessionKey === key;
+      const wasSelected = this.selectedSessionKey === key;
+      this.remoteSessions.delete(key);
+      if (wasActive) {
+        this.activeSessionKey = '';
+        this.nowPlaying = null;
+      }
+      if (wasSelected) {
+        this.selectedSessionKey = '';
+      }
+      if (wasActive || wasSelected) {
+        this.setActiveSessionKey(this.selectedSessionKey);
+      } else {
+        this.emitRemoteSessions();
+      }
+      return;
+    }
+    const session = this.remoteSessions.get(key) || { lastPlayTs: 0, status: 'stopped' };
+    session.host = host;
+    session.guid = guid;
+    session.connected = true;
+    session.lastSeen = now;
+    if (!session.lastUpdate) session.lastUpdate = now;
+    this.remoteSessions.set(key, session);
+    if (!this.selectedSessionKey) {
+      this.selectedSessionKey = key;
+    }
+    this.emitRemoteSessions();
   }
   deriveSessionKey(payload) {
     if (!payload || typeof payload !== 'object') return 'unknown';
@@ -387,11 +478,34 @@ export class OverlayServer {
     return 'unknown';
   }
 
-  selectActiveSession() {
+  selectActiveSession({ preferSelected = true } = {}) {
+    let selectedSession = null;
+    if (this.selectedSessionKey) {
+      selectedSession = this.remoteSessions.get(this.selectedSessionKey) || null;
+      const status = String(selectedSession?.status || '').toLowerCase();
+      if (!selectedSession || status === 'stopped') {
+        this.selectedSessionKey = '';
+        selectedSession = null;
+      }
+    }
+    if (preferSelected && this.selectedSessionKey && selectedSession) {
+      return this.selectedSessionKey;
+    }
+
+    let activeSession = null;
+    if (this.activeSessionKey) {
+      activeSession = this.remoteSessions.get(this.activeSessionKey) || null;
+      const status = String(activeSession?.status || '').toLowerCase();
+      if (!activeSession || status === 'stopped') {
+        this.activeSessionKey = '';
+        activeSession = null;
+      }
+    }
     let bestKey = '';
     let bestTs = -1;
     for (const [key, session] of this.remoteSessions) {
       const status = String(session?.status || '').toLowerCase();
+      if (status === 'stopped') continue;
       if (status === 'playing') {
         const ts = session.lastPlayTs ?? session.lastUpdate ?? 0;
         if (ts >= bestTs) {
@@ -401,10 +515,12 @@ export class OverlayServer {
       }
     }
     if (bestKey) return bestKey;
-    if (this.activeSessionKey && this.remoteSessions.has(this.activeSessionKey)) return this.activeSessionKey;
+    if (this.activeSessionKey && activeSession) return this.activeSessionKey;
     let fallbackKey = '';
     let fallbackTs = -1;
     for (const [key, session] of this.remoteSessions) {
+      const status = String(session?.status || '').toLowerCase();
+      if (status === 'stopped') continue;
       const ts = session.lastUpdate ?? 0;
       if (ts >= fallbackTs) {
         fallbackTs = ts;
@@ -421,9 +537,29 @@ export class OverlayServer {
     const now = Date.now();
     const session = this.remoteSessions.get(sessionKey) || { lastPlayTs: 0, status: 'stopped' };
     const previousStatus = String(session.status || '').toLowerCase();
-    session.nowPlaying = normalized;
+    const previousInfo = session.nowPlaying || null;
+    const previousProgress = getProgressSeconds(previousInfo);
+    const nextProgress = getProgressSeconds(normalized);
+    const previousReceivedAt = Number(previousInfo?.receivedAt) || session.lastUpdate || 0;
+    const nextReceivedAt = Number(normalized.receivedAt) || now;
+    const normalizedWithKey = { ...normalized, sessionKey };
+    const sameEntry = areSameRemoteEntries(previousInfo, normalizedWithKey);
+    const elapsedMs = previousReceivedAt > 0 ? Math.max(0, nextReceivedAt - previousReceivedAt) : 0;
+    if (
+      normalized.status === 'playing' &&
+      previousInfo &&
+      nextProgress != null &&
+      previousProgress != null &&
+      elapsedMs >= REMOTE_STALL_TIME_MS &&
+      Math.abs(nextProgress - previousProgress) <= REMOTE_PROGRESS_EPSILON_SECONDS &&
+      sameEntry
+    ) {
+      normalized.status = 'paused';
+      normalizedWithKey.status = 'paused';
+    }
+    session.nowPlaying = normalizedWithKey;
     session.lastUpdate = now;
-    session.status = String(normalized.status || '').toLowerCase();
+    session.status = String(normalizedWithKey.status || '').toLowerCase();
     if (session.status === 'playing' && previousStatus !== 'playing') {
       session.lastPlayTs = now;
     }
@@ -459,6 +595,115 @@ export class OverlayServer {
       const age = now - (sessionData.lastUpdate ?? now);
       if (age > STALE_WINDOW) this.remoteSessions.delete(key);
     }
+    if (this.activeSessionKey && !this.remoteSessions.has(this.activeSessionKey)) {
+      this.activeSessionKey = '';
+      this.nowPlaying = null;
+    }
+    if (this.selectedSessionKey && !this.remoteSessions.has(this.selectedSessionKey)) {
+      this.selectedSessionKey = '';
+    }
+    this.emitRemoteSessions();
+  }
+  buildRemoteSessionsPayload() {
+    const sessions = [];
+    for (const [key, session] of this.remoteSessions) {
+      const status = String(session?.status || '').toLowerCase();
+      if (status === 'stopped') continue;
+      const info = session?.nowPlaying || null;
+      sessions.push({
+        key,
+        host: session?.host || '',
+        status: session?.status || 'unknown',
+        lastUpdate: session?.lastUpdate || 0,
+        lastPlayTs: session?.lastPlayTs || 0,
+        connected: session?.connected !== false,
+        guid: session?.guid || info?.guid || '',
+        nowPlaying: info ? {
+          sessionKey: info.sessionKey || key,
+          title: info.title || '',
+          artists: Array.isArray(info.artists) ? info.artists : [],
+          status: info.status || '',
+          progressMs: info.progressMs ?? null,
+          durationMs: info.durationMs ?? null,
+          songLink: info.songLink || '',
+          platform: info.platform || '',
+          isLive: info.isLive === true
+        } : null
+      });
+    }
+    sessions.sort((a, b) => {
+      const playA = Number(a?.lastPlayTs) || 0;
+      const playB = Number(b?.lastPlayTs) || 0;
+      if (playA !== playB) return playB - playA;
+      const updateA = Number(a?.lastUpdate) || 0;
+      const updateB = Number(b?.lastUpdate) || 0;
+      if (updateA !== updateB) return updateB - updateA;
+      const statusA = (a?.status || '').toLowerCase();
+      const statusB = (b?.status || '').toLowerCase();
+      if (statusA !== statusB) {
+        const rank = { playing: 2, paused: 1 };
+        const scoreA = rank[statusA] || 0;
+        const scoreB = rank[statusB] || 0;
+        if (scoreA !== scoreB) return scoreB - scoreA;
+      }
+      return a.key.localeCompare(b.key);
+    });
+    const hasActive = this.activeSessionKey && sessions.some((session) => session.key === this.activeSessionKey);
+    const hasSelected = this.selectedSessionKey && sessions.some((session) => session.key === this.selectedSessionKey);
+    const activeKey = hasActive ? this.activeSessionKey : '';
+    const selectedKey = hasSelected ? this.selectedSessionKey : '';
+    return {
+      type: 'remoteSessions',
+      payload: {
+        activeKey,
+        selectedKey,
+        sessions
+      }
+    };
+  }
+  emitRemoteSessions() {
+    if (!this.wss?.clients?.size) return;
+    const message = this.buildRemoteSessionsPayload();
+    this.broadcast(message);
+  }
+  sendRemoteSessions(ws) {
+    if (!ws || ws.readyState !== WS_READY_STATE_OPEN) return;
+    const message = this.buildRemoteSessionsPayload();
+    try { ws.send(JSON.stringify(message)); } catch { /* noop */ }
+  }
+  setActiveSessionKey(key) {
+    const normalized = typeof key === 'string' ? key.trim() : '';
+    const session = normalized ? this.remoteSessions.get(normalized) : null;
+    const status = String(session?.status || '').toLowerCase();
+    const exists = Boolean(normalized && session && status !== 'stopped');
+    this.selectedSessionKey = exists ? normalized : '';
+    const previousActive = this.activeSessionKey;
+    if (exists) {
+      this.activeSessionKey = normalized;
+    } else {
+      this.activeSessionKey = this.selectActiveSession({ preferSelected: false });
+    }
+    const activeSession = this.activeSessionKey ? this.remoteSessions.get(this.activeSessionKey) : null;
+    const activePayload = activeSession?.nowPlaying || null;
+    if (activePayload) {
+      const changed = previousActive !== this.activeSessionKey || this.nowPlaying !== activePayload;
+      this.nowPlaying = activePayload;
+      if (changed) {
+        this.broadcast({ type: 'nowPlaying', payload: activePayload });
+        const useRemoteTimeline = store.get('player.useRemoteTimeline') === true;
+        if (useRemoteTimeline) {
+          const t = Number.isFinite(activePayload.progressSeconds)
+            ? activePayload.progressSeconds
+            : (Number.isFinite(activePayload.progressMs) ? activePayload.progressMs / 1000 : null);
+          if (t != null) {
+            this.broadcast({ type: 'setTime', payload: { t } });
+          }
+        }
+      }
+    } else if (this.activeSessionKey && !activePayload) {
+      this.nowPlaying = null;
+    }
+    this.emitRemoteSessions();
   }
   broadcast(obj) {
     const s = JSON.stringify(obj);

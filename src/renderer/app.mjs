@@ -736,6 +736,9 @@ const state = {
   activeSubsId: '',
   videoSearch: '',
   subsSearch: '',
+  remoteSessions: [],
+  remoteSelectedKey: '',
+  remoteActiveSessionKey: '',
   objectUrl: '',
   binProgress: new Map(),
   binInfoRefreshTimer: null,
@@ -834,6 +837,8 @@ class OverlaySync {
     this.video = videoEl;
     this.pendingTime = null;
     this.nowPlayingHandler = null;
+    this.remoteSessionsHandler = null;
+    this.pendingSessionKey = null;
 
     this.handleWsOpen = this.handleWsOpen.bind(this);
     this.handleWsClose = this.handleWsClose.bind(this);
@@ -842,6 +847,9 @@ class OverlaySync {
   }
   setNowPlayingHandler(handler) {
     this.nowPlayingHandler = typeof handler === 'function' ? handler : null;
+  }
+  setRemoteSessionsHandler(handler) {
+    this.remoteSessionsHandler = typeof handler === 'function' ? handler : null;
   }
   connect(port) {
     const parsed = Number.parseInt(port, 10);
@@ -882,6 +890,11 @@ class OverlaySync {
       this.pendingTime = null;
       this.sendTime(time);
     }
+    if (this.pendingSessionKey != null) {
+      const key = this.pendingSessionKey;
+      this.pendingSessionKey = null;
+      this.setActiveSessionKey(key);
+    }
   }
   handleWsClose(event) {
     if (event?.target) this.detachWs(event.target);
@@ -893,14 +906,17 @@ class OverlaySync {
     // suppress connection errors to keep renderer logs quiet
   }
   handleWsMessage(event) {
-    if (!this.nowPlayingHandler || !event?.data) return;
+    if (!event?.data) return;
     let data;
     try { data = JSON.parse(event.data); } catch { return; }
     if (!data || typeof data !== 'object') return;
     if (data.type === 'nowPlaying' && data.payload) {
-      this.nowPlayingHandler(data.payload);
+      this.nowPlayingHandler?.(data.payload);
+    } else if (data.type === 'remoteSessions') {
+      const payload = data.payload && typeof data.payload === 'object' ? data.payload : {};
+      this.remoteSessionsHandler?.(payload);
     } else if (!data.type && looksLikeNowPlayingPayload(data)) {
-      this.nowPlayingHandler(data);
+      this.nowPlayingHandler?.(data);
     }
   }
   start() {
@@ -925,11 +941,24 @@ class OverlaySync {
       this.pendingTime = time;
     }
   }
+  setActiveSessionKey(key) {
+    const normalized = typeof key === 'string' ? key : '';
+    const ws = this.ws;
+    const message = JSON.stringify({ type: 'setActiveSession', payload: { key: normalized } });
+    if (ws && ws.readyState === 1) {
+      try { ws.send(message); } catch { /* noop */ }
+      this.pendingSessionKey = null;
+    } else {
+      this.pendingSessionKey = normalized;
+    }
+  }
 }
 
 const overlaySync = new OverlaySync(dom.video);
 overlaySync.setNowPlayingHandler(handleRemoteNowPlaying);
+overlaySync.setRemoteSessionsHandler(handleRemoteSessionsUpdate);
 const REMOTE_TIME_EPSILON = 0.25;
+const REMOTE_STALL_TIME_MS = 1500;
 
 function looksLikeNowPlayingPayload(raw) {
   if (!raw || typeof raw !== 'object') return false;
@@ -955,6 +984,7 @@ function normalizeNowPlayingPayload(raw) {
     ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
     : [];
   return {
+    sessionKey: normalizeStr(raw.sessionKey || raw.session_key),
     guid: normalizeStr(raw.guid),
     cover: normalizeStr(raw.cover),
     title: normalizeStr(raw.title),
@@ -971,13 +1001,85 @@ function normalizeNowPlayingPayload(raw) {
   };
 }
 
+function getRemoteProgressSeconds(info) {
+  if (!info || typeof info !== 'object') return null;
+  if (Number.isFinite(info.progressSeconds)) return Math.max(0, info.progressSeconds);
+  if (Number.isFinite(info.progressMs)) return Math.max(0, info.progressMs / 1000);
+  return null;
+}
+
+function sanitizeRemoteIdentity(value, { lower = false } = {}) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  return lower ? trimmed.toLowerCase() : trimmed;
+}
+
+function areSameRemoteEntries(prev, next, prevKey = '', nextKey = '') {
+  if (!prev || !next || typeof prev !== 'object' || typeof next !== 'object') return false;
+  if (prevKey && nextKey) return prevKey === nextKey;
+  const prevGuid = sanitizeRemoteIdentity(prev.guid);
+  const nextGuid = sanitizeRemoteIdentity(next.guid);
+  if (prevGuid && nextGuid) return prevGuid === nextGuid;
+  const prevSong = sanitizeRemoteIdentity(prev.songLink);
+  const nextSong = sanitizeRemoteIdentity(next.songLink);
+  if (prevSong && nextSong) return prevSong === nextSong;
+  const prevTitle = sanitizeRemoteIdentity(prev.title, { lower: true });
+  const nextTitle = sanitizeRemoteIdentity(next.title, { lower: true });
+  if (!prevTitle || !nextTitle || prevTitle !== nextTitle) return false;
+  const prevPlatform = sanitizeRemoteIdentity(prev.platform, { lower: true });
+  const nextPlatform = sanitizeRemoteIdentity(next.platform, { lower: true });
+  if (prevPlatform && nextPlatform && prevPlatform !== nextPlatform) return false;
+  const joinArtists = (artists) => Array.isArray(artists)
+    ? artists.map((name) => sanitizeRemoteIdentity(name, { lower: true })).filter(Boolean).join('|')
+    : '';
+  const prevArtists = joinArtists(prev.artists);
+  const nextArtists = joinArtists(next.artists);
+  if (prevArtists && nextArtists) return prevArtists === nextArtists;
+  return true;
+}
+
 function handleRemoteNowPlaying(raw) {
+  const previousInfo = state.remoteNowPlaying;
   const payload = normalizeNowPlayingPayload(raw);
   if (!payload) return;
+  const payloadSessionKey = sanitizeRemoteIdentity(payload.sessionKey);
+  if (payloadSessionKey) {
+    payload.sessionKey = payloadSessionKey;
+  }
+  const selectedSessionKey = sanitizeRemoteIdentity(state.remoteSelectedKey);
+  if (selectedSessionKey && payloadSessionKey && selectedSessionKey !== payloadSessionKey) {
+    return;
+  }
+  if (!selectedSessionKey && payloadSessionKey && sanitizeRemoteIdentity(state.remoteActiveSessionKey) !== payloadSessionKey) {
+    state.remoteActiveSessionKey = payloadSessionKey;
+    if (state.useRemoteTimeline) {
+      updateVideoCacheSelect(payloadSessionKey);
+    }
+  }
+  const previousKeyDerived = previousInfo ? getRemoteMediaKey(previousInfo) : '';
+  const derivedKey = getRemoteMediaKey(payload) || '';
+  const previousSessionKey = sanitizeRemoteIdentity(previousInfo?.sessionKey);
+  const sameEntry = areSameRemoteEntries(previousInfo, payload, previousSessionKey || previousKeyDerived, payloadSessionKey || derivedKey);
+  const previousReceivedAt = Number(previousInfo?.receivedAt) || state.remoteLastUpdate || 0;
+  const nextReceivedAt = Number(payload.receivedAt) || Date.now();
+  if (sameEntry && payload.status === 'playing') {
+    const previousProgress = getRemoteProgressSeconds(previousInfo);
+    const nextProgress = getRemoteProgressSeconds(payload);
+    const elapsedMs = previousReceivedAt > 0 ? Math.max(0, nextReceivedAt - previousReceivedAt) : 0;
+    if (
+      previousProgress != null &&
+      nextProgress != null &&
+      elapsedMs >= REMOTE_STALL_TIME_MS &&
+      Math.abs(nextProgress - previousProgress) <= REMOTE_TIME_EPSILON
+    ) {
+      payload.status = 'paused';
+    }
+  }
   state.remoteNowPlaying = payload;
   if (payload.guid) state.remoteLastGuid = payload.guid;
-  state.remoteLastUpdate = payload.receivedAt;
-  const derivedKey = getRemoteMediaKey(payload) || '';
+  state.remoteLastUpdate = Number.isFinite(payload.receivedAt)
+    ? payload.receivedAt
+    : Date.now();
   const previousKey = state.remoteMediaKey || '';
   if (derivedKey) state.remoteMediaKey = derivedKey;
   if (state.useRemoteTimeline) {
@@ -987,20 +1089,57 @@ function handleRemoteNowPlaying(raw) {
       applySubtitleOffsetForSelection({ subsId: state.activeSubsId, notify: true });
     }
     applyRemoteMediaUiState();
-    updateVideoCacheSelect(state.activeVideoId);
-    updateRemotePlayerUi(payload);
+    updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+  }
+  updateRemotePlayerUi(payload);
+  const effectiveStatus = getRemotePlaybackStatus(payload);
+  if (state.useRemoteTimeline && effectiveStatus === 'playing') {
     startRemoteProgressTimer();
   } else {
-    updateRemotePlayerUi(payload);
     stopRemoteProgressTimer();
   }
   updateActiveCacheInfo();
 }
 
+function handleRemoteSessionsUpdate(payload = {}) {
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const normalized = [];
+  for (const item of sessions) {
+    const entry = normalizeRemoteSession(item);
+    if (entry) normalized.push(entry);
+  }
+  normalized.sort((a, b) => {
+    const playA = Number(a?.lastPlayTs) || 0;
+    const playB = Number(b?.lastPlayTs) || 0;
+    if (playA !== playB) return playB - playA;
+    const updateA = Number(a?.lastUpdate) || 0;
+    const updateB = Number(b?.lastUpdate) || 0;
+    if (updateA !== updateB) return updateB - updateA;
+    const statusA = (a?.status || '').toLowerCase();
+    const statusB = (b?.status || '').toLowerCase();
+    if (statusA !== statusB) {
+      const rank = { playing: 2, paused: 1 };
+      const scoreA = rank[statusA] || 0;
+      const scoreB = rank[statusB] || 0;
+      if (scoreA !== scoreB) return scoreB - scoreA;
+    }
+    return a.key.localeCompare(b.key);
+  });
+  state.remoteSessions = normalized;
+  const activeKey = typeof payload.activeKey === 'string' ? payload.activeKey : '';
+  const selectedKey = typeof payload.selectedKey === 'string' ? payload.selectedKey : '';
+  state.remoteActiveSessionKey = normalized.some((session) => session.key === activeKey) ? activeKey : '';
+  state.remoteSelectedKey = normalized.some((session) => session.key === selectedKey) ? selectedKey : '';
+  if (state.useRemoteTimeline) {
+    const targetKey = state.remoteSelectedKey || state.remoteActiveSessionKey || '';
+    updateVideoCacheSelect(targetKey);
+  }
+}
+
 function applyRemoteTimeline(payload) {
   if (!payload) return;
   if (!dom.video) return;
-  const status = String(payload.status || '').toLowerCase();
+  const status = getRemotePlaybackStatus(payload);
   dom.video.dataset.remoteStatus = status || 'unknown';
   dom.video.classList.toggle('is-remote-playing', status === 'playing');
   dom.video.classList.toggle('is-remote-paused', status === 'paused');
@@ -1047,6 +1186,32 @@ function formatClockTime(seconds) {
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+function getRemotePayloadTimestamp(info = state.remoteNowPlaying) {
+  if (info && Number.isFinite(info.receivedAt)) return info.receivedAt;
+  if (info === state.remoteNowPlaying && Number.isFinite(state.remoteLastUpdate)) {
+    return state.remoteLastUpdate;
+  }
+  return 0;
+}
+
+function getRemotePlaybackStatus(info = state.remoteNowPlaying) {
+  if (!info || typeof info !== 'object') return 'unknown';
+  const status = String(info.status || '').toLowerCase();
+  if (status === 'playing') {
+    const receivedAt = getRemotePayloadTimestamp(info);
+    if (receivedAt > 0) {
+      const staleFor = Date.now() - receivedAt;
+      if (staleFor >= REMOTE_STALL_TIME_MS) {
+        return 'paused';
+      }
+    }
+    return 'playing';
+  }
+  if (status === 'paused') return 'paused';
+  if (status === 'stopped') return 'stopped';
+  return status || 'unknown';
+}
+
 function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
   if (!info || typeof info !== 'object') {
     return { progress: null, duration: null };
@@ -1058,9 +1223,9 @@ function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
     ? Math.max(0, info.durationSeconds)
     : (Number.isFinite(info.durationMs) ? Math.max(0, info.durationMs / 1000) : null);
   let progress = progressBase != null ? Math.max(0, progressBase) : null;
-  const status = String(info.status || '').toLowerCase();
-  const baseTs = Number.isFinite(info.receivedAt) ? info.receivedAt : state.remoteLastUpdate || Date.now();
-  if (progress != null && status === 'playing') {
+  const status = getRemotePlaybackStatus(info);
+  const baseTs = getRemotePayloadTimestamp(info);
+  if (progress != null && status === 'playing' && baseTs > 0) {
     const elapsed = Math.max(0, (Date.now() - baseTs) / 1000);
     progress += elapsed;
   }
@@ -1093,7 +1258,7 @@ function updateRemoteProgressDisplay(info = state.remoteNowPlaying) {
 
 function getRemoteStatusLabel(info = state.remoteNowPlaying) {
   if (!info || typeof info !== 'object') return '等待播放';
-  const status = String(info.status || '').toLowerCase();
+  const status = getRemotePlaybackStatus(info);
   const isLive = info.isLive === true;
   if (status === 'playing') return isLive ? '直播中' : '播放中';
   if (status === 'paused') return isLive ? '直播暫停' : '已暫停';
@@ -1123,7 +1288,7 @@ function updateRemotePlayerUi(info = state.remoteNowPlaying) {
     applyRemoteCoverImage(remote?.cover || '');
   }
 
-  const status = String(remote?.status || '').toLowerCase();
+  const status = getRemotePlaybackStatus(remote);
   dom.remoteHud.classList.toggle('is-playing', status === 'playing');
   dom.remoteHud.classList.toggle('is-paused', status === 'paused');
   dom.remoteHud.classList.toggle('is-stopped', !status || status === 'stopped');
@@ -1140,6 +1305,13 @@ function startRemoteProgressTimer() {
       return;
     }
     updateRemoteProgressDisplay();
+    if (getRemotePlaybackStatus() !== 'playing') {
+      if (state.useRemoteTimeline && state.remoteNowPlaying) {
+        applyRemoteTimeline(state.remoteNowPlaying);
+      }
+      updateRemotePlayerUi();
+      stopRemoteProgressTimer();
+    }
   }, 500);
 }
 
@@ -1227,20 +1399,21 @@ function updateRemoteToggleUI() {
   dom.useRemoteTimelineToggle.setAttribute('aria-checked', state.useRemoteTimeline ? 'true' : 'false');
 }
 
-function getRemoteMediaLabel(remote = state.remoteNowPlaying) {
-  if (!remote || typeof remote !== 'object') return '外部時間軸已啟用';
-  const parts = [];
-  if (remote.title) parts.push(remote.title);
-  if (Array.isArray(remote.artists) && remote.artists.length) parts.push(remote.artists.join(', '));
-  if (!parts.length && remote.platform) parts.push(remote.platform);
-  return parts.length ? parts.join(' - ') : '外部時間軸已啟用';
-}
-
 function applyRemoteMediaUiState() {
   const usingRemote = Boolean(state.useRemoteTimeline);
   if (dom.videoCacheSearch) {
-    dom.videoCacheSearch.disabled = usingRemote;
-    dom.videoCacheSearch.classList.toggle('is-remote-disabled', usingRemote);
+    const input = dom.videoCacheSearch;
+    input.disabled = false;
+    input.classList.toggle('is-remote-disabled', usingRemote);
+    if (!input.dataset.placeholderVideo) {
+      input.dataset.placeholderVideo = input.placeholder || '';
+    }
+    if (!input.dataset.placeholderRemote) {
+      input.dataset.placeholderRemote = '搜尋外部播放來源...';
+    }
+    input.placeholder = usingRemote
+      ? input.dataset.placeholderRemote
+      : (input.dataset.placeholderVideo || '');
   }
   if (dom.pickVideo) {
     dom.pickVideo.disabled = usingRemote;
@@ -1249,38 +1422,6 @@ function applyRemoteMediaUiState() {
   const select = dom.videoCacheSelect;
   if (!select) return;
   select.classList.toggle('is-remote-disabled', usingRemote);
-  if (usingRemote) {
-    const label = getRemoteMediaLabel();
-    const previousLabel = select.dataset.remoteLabel || '';
-    const hasSingleOption = select.options.length === 1;
-    const currentOption = hasSingleOption ? select.options[0] : null;
-    const needsRebuild =
-      !currentOption ||
-      currentOption.value !== '' ||
-      currentOption.disabled !== true ||
-      currentOption.textContent !== label;
-
-    select.disabled = true;
-
-    if (needsRebuild) {
-      select.innerHTML = '';
-      const option = new Option(label, '', true, true);
-      option.disabled = true;
-      select.add(option);
-      refreshCustomSelect(select, { rebuildOptions: true });
-    } else if (previousLabel !== label) {
-      refreshCustomSelect(select, { rebuildOptions: true });
-    }
-
-    if (select.dataset.remoteLabel !== label) {
-      select.dataset.remoteLabel = label;
-    }
-  } else {
-    select.disabled = false;
-    if (select.dataset.remoteLabel) {
-      delete select.dataset.remoteLabel;
-    }
-  }
 }
 
 function setRemoteTimelineEnabled(enabled, { persist = false } = {}) {
@@ -1307,12 +1448,20 @@ function setRemoteTimelineEnabled(enabled, { persist = false } = {}) {
   updateRemotePlayerVisibility();
   if (state.useRemoteTimeline) {
     updateRemotePlayerUi();
-    startRemoteProgressTimer();
+    if (getRemotePlaybackStatus() === 'playing') {
+      startRemoteProgressTimer();
+    } else {
+      stopRemoteProgressTimer();
+    }
   } else {
     stopRemoteProgressTimer();
     updateRemotePlayerUi();
   }
-  updateVideoCacheSelect(state.activeVideoId);
+  if (state.useRemoteTimeline) {
+    updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+  } else {
+    updateVideoCacheSelect(state.activeVideoId);
+  }
   const canApplyOffset = state.activeSubsId && (!state.useRemoteTimeline || state.remoteMediaKey);
   if (canApplyOffset) {
     applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
@@ -2387,7 +2536,9 @@ async function handleDownloadDone(payload) {
     const merged = upsertCacheEntry(entry);
     let activeVideoEntry = getEntryById(state.activeVideoId);
     let activeSubsEntry = getEntryById(state.activeSubsId);
-    if (merged?.hasVideo && merged.videoFilename) {
+    if (state.useRemoteTimeline) {
+      updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+    } else if (merged?.hasVideo && merged.videoFilename) {
       state.activeVideoId = merged.id;
       updateVideoCacheSelect(merged.id);
       await loadVideoEntry(merged);
@@ -2475,16 +2626,27 @@ function formatSubtitleOptionLabel(entry) {
   return `${base}（${markers.join(' / ')}）`;
 }
 
-function updateVideoCacheSelect(selectedId = state.activeVideoId) {
+function updateVideoCacheSelect(selectedId) {
   const select = dom.videoCacheSelect;
   if (!select) return;
   applyRemoteMediaUiState();
-  if (state.useRemoteTimeline) return;
+  if (state.useRemoteTimeline) {
+    const searchTerm = (state.videoSearch || '').toLowerCase();
+    const targetKey = typeof selectedId === 'string'
+      ? selectedId
+      : (state.remoteSelectedKey || state.remoteActiveSessionKey || '');
+    populateRemoteSessionSelect(select, {
+      selectedKey: targetKey,
+      searchTerm
+    });
+    return;
+  }
+  const effectiveSelectedId = typeof selectedId === 'string' ? selectedId : state.activeVideoId;
   const searchTerm = (state.videoSearch || '').toLowerCase();
   const entries = state.cachedEntries
     .filter((entry) => entry?.hasVideo && entry.videoFilename && matchesEntrySearch(entry, searchTerm));
   populateSelect(select, entries, {
-    selectedId,
+    selectedId: effectiveSelectedId,
     placeholder: '選擇影片或音訊',
     emptyLabel: state.videoSearch ? '（沒有符合的媒體）' : '（尚未匯入媒體）',
     buildLabel: formatVideoOptionLabel,
@@ -2540,9 +2702,137 @@ function populateSelect(select, entries, {
   refreshCustomSelect(select, { rebuildOptions: true });
 }
 
+function normalizeRemoteSession(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const key = typeof raw.key === 'string' ? raw.key.trim() : '';
+  if (!key) return null;
+  const host = typeof raw.host === 'string' ? raw.host : '';
+  const status = typeof raw.status === 'string' ? raw.status.trim().toLowerCase() : 'unknown';
+  const lastUpdateRaw = Number(raw.lastUpdate);
+  const lastUpdate = Number.isFinite(lastUpdateRaw) ? lastUpdateRaw : 0;
+  const lastPlayTsRaw = Number(raw.lastPlayTs);
+  const lastPlayTs = Number.isFinite(lastPlayTsRaw) ? lastPlayTsRaw : 0;
+  const connected = raw.connected !== false;
+  let nowPlaying = null;
+  if (raw.nowPlaying && typeof raw.nowPlaying === 'object') {
+    const rawSessionKey = typeof raw.nowPlaying.sessionKey === 'string'
+      ? raw.nowPlaying.sessionKey
+      : (typeof raw.nowPlaying.session_key === 'string' ? raw.nowPlaying.session_key : '');
+    const artists = Array.isArray(raw.nowPlaying.artists)
+      ? raw.nowPlaying.artists.map((name) => (typeof name === 'string' ? name.trim() : '')).filter(Boolean)
+      : [];
+    nowPlaying = {
+      sessionKey: rawSessionKey ? rawSessionKey.trim() : key,
+      title: typeof raw.nowPlaying.title === 'string' ? raw.nowPlaying.title : '',
+      artists,
+      status: typeof raw.nowPlaying.status === 'string'
+        ? raw.nowPlaying.status.trim().toLowerCase()
+        : status,
+      songLink: typeof raw.nowPlaying.songLink === 'string' ? raw.nowPlaying.songLink : '',
+      platform: typeof raw.nowPlaying.platform === 'string' ? raw.nowPlaying.platform : '',
+      isLive: raw.nowPlaying.isLive === true
+    };
+  }
+  const resolvedStatus = (nowPlaying?.status || status || 'unknown').toLowerCase();
+  if (resolvedStatus === 'stopped') return null;
+  const searchParts = [key, host];
+  if (nowPlaying) {
+    if (nowPlaying.title) searchParts.push(nowPlaying.title);
+    if (nowPlaying.artists.length) searchParts.push(nowPlaying.artists.join(' '));
+    if (nowPlaying.platform) searchParts.push(nowPlaying.platform);
+    if (nowPlaying.songLink) searchParts.push(nowPlaying.songLink);
+  }
+  const searchText = searchParts
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+  return { key, host, status: resolvedStatus || 'unknown', lastUpdate, lastPlayTs, connected, nowPlaying, searchText };
+}
+
+function matchesRemoteSessionSearch(session, term) {
+  if (!term) return true;
+  return (session?.searchText || '').includes(term);
+}
+
+function formatRemoteSessionOptionLabel(session) {
+  if (!session) return '';
+  const nowPlaying = session.nowPlaying || null;
+  const host = session.host || '';
+  const title = nowPlaying?.title || '';
+  const artists = Array.isArray(nowPlaying?.artists) && nowPlaying.artists.length
+    ? nowPlaying.artists.join(', ')
+    : '';
+  const platform = nowPlaying?.platform || '';
+  const statusSource = nowPlaying?.status || session.status;
+  const parts = [];
+  if (host) parts.push(host);
+  if (title) parts.push(title);
+  else if (artists) parts.push(artists);
+  let label = parts.length ? parts.join(' · ') : (platform || session.key);
+  const statusLabel = getRemoteStatusLabel({
+    status: statusSource,
+    isLive: nowPlaying?.isLive,
+    title: nowPlaying?.title,
+    artists: nowPlaying?.artists
+  });
+  if (statusLabel) {
+    label += `（${statusLabel}）`;
+  }
+  return label;
+}
+
+function populateRemoteSessionSelect(select, { selectedKey = '', searchTerm = '' } = {}) {
+  const normalizedTerm = typeof searchTerm === 'string' ? searchTerm : '';
+  const sessions = state.remoteSessions.filter((session) => matchesRemoteSessionSearch(session, normalizedTerm));
+  select.innerHTML = '';
+  if (!sessions.length) {
+    const emptyLabel = state.remoteSessions.length
+      ? '（沒有符合的外部來源）'
+      : '（沒有外部播放來源）';
+    const option = new Option(emptyLabel, '');
+    option.disabled = true;
+    option.selected = true;
+    select.add(option);
+    select.disabled = true;
+    refreshCustomSelect(select, { rebuildOptions: true });
+    return;
+  }
+  select.disabled = false;
+  const placeholder = new Option('選擇要追蹤的頁面', '', !selectedKey, !selectedKey);
+  select.add(placeholder);
+  sessions.forEach((session) => {
+    const option = new Option(formatRemoteSessionOptionLabel(session), session.key, false, session.key === selectedKey);
+    const tooltipParts = [];
+    if (session.nowPlaying?.artists?.length) tooltipParts.push(session.nowPlaying.artists.join(', '));
+    if (session.nowPlaying?.platform) tooltipParts.push(session.nowPlaying.platform);
+    if (session.host && session.host !== session.nowPlaying?.platform) tooltipParts.push(session.host);
+    if (session.nowPlaying?.songLink) {
+      option.title = session.nowPlaying.songLink;
+    } else if (tooltipParts.length) {
+      option.title = tooltipParts.join(' · ');
+    }
+    select.add(option);
+  });
+  let finalValue = selectedKey;
+  if (!sessions.some((session) => session.key === finalValue)) {
+    const fallback = state.remoteActiveSessionKey;
+    if (fallback && sessions.some((session) => session.key === fallback)) {
+      finalValue = fallback;
+    } else {
+      finalValue = '';
+    }
+  }
+  select.value = finalValue;
+  refreshCustomSelect(select, { rebuildOptions: true });
+}
+
 function handleVideoCacheSearch() {
   state.videoSearch = (dom.videoCacheSearch?.value || '').trim();
-  updateVideoCacheSelect(state.activeVideoId);
+  if (state.useRemoteTimeline) {
+    updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+  } else {
+    updateVideoCacheSelect(state.activeVideoId);
+  }
 }
 
 function handleSubsCacheSearch() {
@@ -2557,6 +2847,12 @@ function getEntryById(id) {
 
 function handleVideoCacheSelectChange() {
   const id = dom.videoCacheSelect?.value || '';
+  if (state.useRemoteTimeline) {
+    state.remoteSelectedKey = id;
+    overlaySync.setActiveSessionKey(id);
+    refreshCustomSelect(dom.videoCacheSelect);
+    return;
+  }
   state.activeVideoId = id;
   const entry = getEntryById(id);
   loadVideoEntry(entry);
@@ -2891,7 +3187,9 @@ async function handleLocalFileSelected(ev) {
 
   if (entry) {
     const merged = upsertCacheEntry(entry);
-    if (merged?.hasVideo && merged.videoFilename) {
+    if (state.useRemoteTimeline) {
+      updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+    } else if (merged?.hasVideo && merged.videoFilename) {
       state.activeVideoId = merged.id;
       updateVideoCacheSelect(merged.id);
       await loadVideoEntry(merged);
