@@ -994,7 +994,8 @@ function normalizeNowPlayingPayload(raw) {
     songLink: normalizedSongLink,
     platform: normalizeStr(raw.platform),
     isLive: raw.is_live === true,
-    receivedAt: Date.now()
+    receivedAt: Date.now(),
+    reset: raw.reset === true
   };
 }
 
@@ -1030,6 +1031,28 @@ function normalizeRemoteUrl(value) {
 function handleRemoteNowPlaying(raw) {
   const payload = normalizeNowPlayingPayload(raw);
   if (!payload) return;
+  if (payload.reset) {
+    state.remoteNowPlaying = null;
+    state.remoteMediaKey = '';
+    state.remoteLastGuid = '';
+    state.remoteLastUpdate = Date.now();
+    stopRemoteProgressTimer();
+    if (state.useRemoteTimeline) {
+      clearRemoteCover();
+      if (dom.video) {
+        dom.video.dataset.remoteStatus = 'unknown';
+        dom.video.classList.remove('is-remote-playing', 'is-remote-paused');
+      }
+      applyRemoteMediaUiState();
+      updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+    }
+    updateRemotePlayerUi();
+    updateActiveCacheInfo();
+    if (state.useRemoteTimeline) {
+      applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
+    }
+    return;
+  }
   const previousKey = state.remoteMediaKey || '';
   const derivedKey = getRemoteMediaKey(payload) || '';
   state.remoteNowPlaying = payload;
@@ -1059,6 +1082,8 @@ function handleRemoteNowPlaying(raw) {
 
 
 function handleRemoteSessionsUpdate(payload = {}) {
+  const previousActiveKey = state.remoteActiveSessionKey;
+  const previousSelectedKey = state.remoteSelectedKey;
   const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
   const normalized = [];
   for (const item of sessions) {
@@ -1090,6 +1115,9 @@ function handleRemoteSessionsUpdate(payload = {}) {
   if (state.useRemoteTimeline) {
     const targetKey = state.remoteSelectedKey || state.remoteActiveSessionKey || '';
     updateVideoCacheSelect(targetKey);
+    if (previousActiveKey !== state.remoteActiveSessionKey || previousSelectedKey !== state.remoteSelectedKey) {
+      applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
+    }
   }
 }
 
@@ -2791,6 +2819,7 @@ function handleVideoCacheSelectChange() {
     state.remoteSelectedKey = id;
     overlaySync.setActiveSessionKey(id);
     refreshCustomSelect(dom.videoCacheSelect);
+    applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
     return;
   }
   state.activeVideoId = id;

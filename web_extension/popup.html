@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="utf-8">
+  <title>subtitle-stream-overlay 插件控制</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+  <div class="app-shell">
+    <header class="header">
+      <div class="brand">
+        <div class="brand-text">
+          <h1>Subtitle Overlay 插件控制台</h1>
+          <p>調整瀏覽器插件與疊加伺服器的連線設定。</p>
+        </div>
+      </div>
+      <div class="status">
+        <span id="statusBadge" class="status-badge" data-enabled="true">已啟用</span>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="card">
+        <div class="card-header">
+          <h2>插件狀態</h2>
+          <p>停用後將暫停向主應用程式傳送播放資訊。</p>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="pluginToggle" checked>
+          <span class="switch-track">
+            <span class="switch-thumb"></span>
+          </span>
+          <span class="switch-label">啟用插件</span>
+        </label>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>連接埠設定</h2>
+          <p>請輸入主應用程式提供的 WebSocket 連接埠號碼。</p>
+        </div>
+        <form id="portForm" class="port-form">
+          <label for="portInput">連接埠</label>
+          <div class="port-input-group">
+            <input type="number" id="portInput" min="1" max="65535" required>
+            <button type="submit" class="primary">儲存</button>
+          </div>
+        </form>
+        <p class="port-preview">目前 Overlay 網址：<span id="portPreview" class="mono"></span></p>
+        <p class="hint">請確保主應用程式已啟動，<br>並使用相同的連接埠以成功同步播放資訊。</p>
+      </section>
+    </main>
+    <footer class="footer">
+      <span id="message" role="status" aria-live="polite"></span>
+    </footer>
+  </div>
+  <script src="popup.js" type="module"></script>
+</body>
+
+</html>

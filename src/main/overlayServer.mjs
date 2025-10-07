@@ -100,7 +100,8 @@ function normalizeNowPlayingPayload(raw) {
     songLink: normalizedSongLink,
     platform: normalizeStr(raw?.platform),
     isLive: raw?.is_live === true,
-    receivedAt: Date.now()
+    receivedAt: Date.now(),
+    reset: raw?.reset === true
   };
 }
 
@@ -316,12 +317,15 @@ export class OverlayServer {
       fontBuffers: this.combineFontPayloads(this.autoFontBuffers, initialStyle),
       style: initialStyle,
       playRes: clonePlayRes(),
-      assMeta: EMPTY_ASS_META
+      assMeta: EMPTY_ASS_META,
+      refreshToken: null,
+      clearToken: null
     };
     this.remoteSessions = new Map();
     this.activeSessionKey = '';
     this.selectedSessionKey = '';
     this.nowPlaying = null;
+    this.overlayCleared = false;
 
     this.app = express();
     this.server = http.createServer(this.app);
@@ -332,6 +336,66 @@ export class OverlayServer {
     this.wss = new WebSocketServer({ server: this.server });
     this.setupRoutes();
     this.setupWs();
+  }
+
+  buildNowPlayingResetPayload() {
+    return {
+      guid: '',
+      cover: '',
+      title: '',
+      artists: [],
+      status: 'unknown',
+      progressMs: 0,
+      durationMs: 0,
+      songLink: '',
+      platform: '',
+      isLive: false,
+      reset: true,
+      receivedAt: Date.now()
+    };
+  }
+
+  broadcastNowPlayingReset() {
+    const payload = this.buildNowPlayingResetPayload();
+    this.broadcast({ type: 'nowPlaying', payload });
+  }
+
+  resetOverlayContent({ reason = '' } = {}) {
+    const hadContent = Boolean(this.state?.subContent || this.rawSubContent);
+    const refreshToken = `remote-reset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const clearToken = `remote-clear-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const nextState = {
+      ...this.state,
+      refreshToken,
+      clearToken
+    };
+    this.state = nextState;
+    this.overlayCleared = hadContent;
+    if (hadContent) {
+      const suffix = reason ? ` (${reason})` : '';
+      console.log('[overlayServer] overlay cleared after remote disconnect' + suffix);
+    }
+    this.broadcast({ type: 'state', payload: nextState });
+  }
+
+  restoreOverlayContent({ reason = '' } = {}) {
+    if (!this.overlayCleared) return;
+    const hasContent = Boolean(this.state?.subContent || this.rawSubContent);
+    if (!hasContent) {
+      this.overlayCleared = false;
+      return;
+    }
+    const refreshToken = `remote-resume-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const nextState = {
+      ...this.state,
+      refreshToken,
+      clearToken: null
+    };
+    this.state = nextState;
+    this.overlayCleared = false;
+    const suffix = reason ? ` (${reason})` : '';
+    console.log('[overlayServer] overlay content restored after remote reconnect' + suffix);
+    this.broadcast({ type: 'state', payload: nextState });
   }
 
   combineFontPayloads(autoFonts = [], style = this.state?.style) {
@@ -437,7 +501,11 @@ export class OverlayServer {
         if (!trimmed) return;
         const firstChar = trimmed[0];
         if (firstChar !== '{' && firstChar !== '[') {
-          if (trimmed.startsWith('connected')) {
+          if (trimmed.toLowerCase() === 'ping') {
+            try {
+              ws.send(JSON.stringify({ type: 'pong', payload: { ts: Date.now() } }));
+            } catch { /* noop */ }
+          } else if (trimmed.startsWith('connected')) {
             this.handleRemoteClientHandshake(trimmed, { closed: false });
           } else if (trimmed.startsWith('closed')) {
             this.handleRemoteClientHandshake(trimmed, { closed: true });
@@ -492,16 +560,17 @@ export class OverlayServer {
       if (!session) return;
       const wasActive = this.activeSessionKey === sessionKey;
       const wasSelected = this.selectedSessionKey === sessionKey;
+      const previousSelectedKey = this.selectedSessionKey;
+      const previousActiveKey = this.activeSessionKey;
       this.remoteSessions.delete(sessionKey);
-      if (wasActive) {
-        this.activeSessionKey = '';
-        this.nowPlaying = null;
-      }
-      if (wasSelected) {
-        this.selectedSessionKey = '';
-      }
       if (wasActive || wasSelected) {
-        this.setActiveSessionKey(this.selectedSessionKey);
+        const targetKey = wasSelected ? '' : this.selectedSessionKey;
+        this.setActiveSessionKey(targetKey);
+        const changed = previousSelectedKey !== this.selectedSessionKey
+          || previousActiveKey !== this.activeSessionKey;
+        if (!changed) {
+          this.emitRemoteSessions();
+        }
       } else {
         this.emitRemoteSessions();
       }
@@ -649,13 +718,19 @@ export class OverlayServer {
     }
 
     const nextActive = this.selectActiveSession();
+    const switchedSessions = Boolean(previousActive && nextActive && previousActive !== nextActive);
     this.activeSessionKey = nextActive;
+    if (switchedSessions) {
+      this.resetOverlayContent({ reason: 'session-switched' });
+    }
     const activeSession = nextActive ? this.remoteSessions.get(nextActive) : null;
     const activePayload = activeSession?.nowPlaying || null;
 
+    const previousPayload = this.nowPlaying;
     if (activePayload) {
       const changed = previousActive !== nextActive || nextActive === sessionKey || this.nowPlaying !== activePayload;
-      if (changed) {
+      const shouldBroadcast = switchedSessions || changed;
+      if (shouldBroadcast) {
         this.nowPlaying = activePayload;
         this.broadcast({ type: 'nowPlaying', payload: activePayload });
         const useRemoteTimeline = store.get('player.useRemoteTimeline') === true;
@@ -667,7 +742,14 @@ export class OverlayServer {
             this.broadcast({ type: 'setTime', payload: { t } });
           }
         }
+        if (!switchedSessions) {
+          this.restoreOverlayContent({ reason: 'nowPlaying-resumed' });
+        }
       }
+    } else if (previousPayload) {
+      this.nowPlaying = null;
+      this.broadcastNowPlayingReset();
+      this.resetOverlayContent({ reason: 'nowPlaying-cleared' });
     } else {
       this.nowPlaying = null;
     }
@@ -758,6 +840,7 @@ export class OverlayServer {
     const previousSelected = this.selectedSessionKey;
     this.selectedSessionKey = exists ? normalized : '';
     const previousActive = this.activeSessionKey;
+    const previousPayload = this.nowPlaying;
     if (exists) {
       this.activeSessionKey = normalized;
     } else {
@@ -766,9 +849,14 @@ export class OverlayServer {
     const activeSession = this.activeSessionKey ? this.remoteSessions.get(this.activeSessionKey) : null;
     const activePayload = activeSession?.nowPlaying || null;
     if (activePayload) {
+      const switchedSessions = Boolean(previousActive && this.activeSessionKey && previousActive !== this.activeSessionKey);
+      if (switchedSessions) {
+        this.resetOverlayContent({ reason: 'session-switched' });
+      }
       const changed = previousActive !== this.activeSessionKey || this.nowPlaying !== activePayload;
+      const shouldBroadcast = switchedSessions || changed;
       this.nowPlaying = activePayload;
-      if (changed) {
+      if (shouldBroadcast) {
         this.broadcast({ type: 'nowPlaying', payload: activePayload });
         const useRemoteTimeline = store.get('player.useRemoteTimeline') === true;
         if (useRemoteTimeline) {
@@ -779,8 +867,15 @@ export class OverlayServer {
             this.broadcast({ type: 'setTime', payload: { t } });
           }
         }
+        if (!switchedSessions) {
+          this.restoreOverlayContent({ reason: 'session-selected' });
+        }
       }
-    } else if (this.activeSessionKey && !activePayload) {
+    } else if (previousPayload) {
+      this.nowPlaying = null;
+      this.broadcastNowPlayingReset();
+      this.resetOverlayContent({ reason: 'session-cleared' });
+    } else {
       this.nowPlaying = null;
     }
     if (previousSelected !== this.selectedSessionKey || previousActive !== this.activeSessionKey) {
@@ -810,6 +905,13 @@ export class OverlayServer {
       ...sanitizedPatch,
       style: mergedStyle
     };
+
+    let explicitClearToken = false;
+    if (Object.prototype.hasOwnProperty.call(sanitizedPatch, 'clearToken')) {
+      explicitClearToken = true;
+      this.overlayCleared = Boolean(sanitizedPatch.clearToken)
+        && Boolean((sanitizedPatch.subContent ?? sanitizedPatch.rawSubContent ?? this.rawSubContent));
+    }
 
     let rawSub = this.rawSubContent;
     if (typeof sanitizedPatch.subContent === 'string') {
@@ -860,6 +962,13 @@ export class OverlayServer {
     nextState.playRes = playRes;
     nextState.assMeta = assMeta;
     nextState.fontBuffers = this.combineFontPayloads(this.autoFontBuffers, mergedStyle);
+
+    const hasNewSubContent = typeof sanitizedPatch.subContent === 'string'
+      || typeof sanitizedPatch.rawSubContent === 'string';
+    if (hasNewSubContent && !explicitClearToken) {
+      nextState.clearToken = null;
+      this.overlayCleared = false;
+    }
 
     this.rawSubContent = rawSub;
     this.state = nextState;

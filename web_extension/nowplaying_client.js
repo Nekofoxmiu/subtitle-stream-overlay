@@ -2,15 +2,21 @@ var conn = null;
 var transfer_interval = null;
 var join_interval = null;
 var hostname = window.location.hostname;
-const FETCH_URL = 'ws://localhost:59837/';
+const DEFAULT_PORT = 59837;
+const SUPPORTED_HOSTS = new Set([
+    'soundcloud.com',
+    'music.youtube.com',
+    'www.youtube.com',
+    'open.spotify.com',
+    'www.bilibili.com'
+]);
+var pluginSettings = { enabled: false, port: DEFAULT_PORT };
 var join_retry_time = 2000
 var lastStatus = 'stopped';
 var guid = generateGuid();
+var skipNextReconnect = false;
+var ytProbeInjected = false;
 
-
-if (location.host === 'www.youtube.com') {
-    chrome.runtime.sendMessage({ type: 'INJECT_YT_PROBE' }, () => { });
-}
 
 let ytLiveFlag = null;
 let ytLiveDurationMs = null;
@@ -25,22 +31,44 @@ window.addEventListener('message', (e) => {
 });
 
 function join() {
-    conn = new WebSocket(FETCH_URL);
+    if (!pluginSettings.enabled || !SUPPORTED_HOSTS.has(hostname)) return;
+    if (conn && (conn.readyState === WebSocket.OPEN || conn.readyState === WebSocket.CONNECTING)) {
+        return;
+    }
+    var url = getFetchUrl();
+    try {
+        conn = new WebSocket(url);
+    } catch (err) {
+        console.error('無法連線到主應用程式', err);
+        scheduleJoin(join_retry_time);
+        return;
+    }
 
-    conn.addEventListener('open', function (event) {
-        console.log('Connection to Now Playing server established');
-        conn.send(`connected - ${hostname} (${guid})`);
+    conn.addEventListener('open', function () {
+        clearTimeout(join_interval);
+        join_interval = null;
+        skipNextReconnect = false;
+        console.log('Connection to Now Playing server established on', url);
+        try {
+            conn.send(`connected - ${hostname} (${guid})`);
+        } catch (_) { }
         start_transfer();
-        if (join_interval) {
-            clearTimeout(join_interval);
-            join_interval = null;
-        };
     });
 
     conn.addEventListener('close', function () {
-        clearTimeout(join_interval);
         clearInterval(transfer_interval);
-        join_interval = setTimeout(function () { join() }, join_retry_time);
+        transfer_interval = null;
+        var shouldSkip = skipNextReconnect;
+        skipNextReconnect = false;
+        conn = null;
+        if (!pluginSettings.enabled) {
+            clearTimeout(join_interval);
+            join_interval = null;
+            return;
+        }
+        if (!shouldSkip) {
+            scheduleJoin(join_retry_time);
+        }
     });
 };
 
@@ -51,6 +79,118 @@ function generateGuid() {
         return v.toString(16);
     });
     return uuid;
+}
+
+function sanitizePort(value) {
+    var parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return DEFAULT_PORT;
+    parsed = Math.max(1, Math.min(65535, parsed));
+    return parsed;
+}
+
+function getFetchUrl() {
+    return 'ws://localhost:' + pluginSettings.port + '/';
+}
+
+function notifyServerClosed(reason) {
+    if (!conn || conn.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    var message = 'closed - ' + hostname + ' (' + guid + ')';
+    if (reason) {
+        message += ' | ' + reason;
+    }
+    try {
+        conn.send(message);
+    } catch (_) { }
+}
+
+function maybeInjectYouTubeProbe() {
+    if (ytProbeInjected) return;
+    if (hostname !== 'www.youtube.com') return;
+    if (!chrome?.runtime?.sendMessage) return;
+    ytProbeInjected = true;
+    try {
+        chrome.runtime.sendMessage({ type: 'INJECT_YT_PROBE' }, function () { });
+    } catch (_) {
+        ytProbeInjected = false;
+    }
+}
+
+function updateSettings(update) {
+    var prevEnabled = pluginSettings.enabled;
+    var prevPort = pluginSettings.port;
+
+    if (update && Object.prototype.hasOwnProperty.call(update, 'enabled')) {
+        pluginSettings.enabled = !!update.enabled;
+    }
+    if (update && Object.prototype.hasOwnProperty.call(update, 'port')) {
+        pluginSettings.port = sanitizePort(update.port);
+    }
+
+    if (!SUPPORTED_HOSTS.has(hostname)) {
+        return;
+    }
+
+    if (!pluginSettings.enabled) {
+        clearTimeout(join_interval);
+        join_interval = null;
+        clearInterval(transfer_interval);
+        transfer_interval = null;
+        if (conn) {
+            skipNextReconnect = true;
+            notifyServerClosed('disabled');
+            try {
+                conn.close();
+            } catch (_) { }
+            conn = null;
+        }
+        return;
+    }
+
+    maybeInjectYouTubeProbe();
+
+    var portChanged = prevPort !== pluginSettings.port;
+    var becameEnabled = !prevEnabled && pluginSettings.enabled;
+
+    if (portChanged && conn) {
+        skipNextReconnect = true;
+        notifyServerClosed('port changed');
+        try {
+            conn.close();
+        } catch (_) { }
+        conn = null;
+        scheduleJoin(0);
+        return;
+    }
+
+    if (becameEnabled) {
+        scheduleJoin(0);
+        return;
+    }
+
+    ensureActiveConnection();
+}
+
+function ensureActiveConnection() {
+    if (!pluginSettings.enabled || !SUPPORTED_HOSTS.has(hostname)) return;
+    if (conn && (conn.readyState === WebSocket.OPEN || conn.readyState === WebSocket.CONNECTING)) {
+        return;
+    }
+    scheduleJoin(0);
+}
+
+function scheduleJoin(delay) {
+    if (typeof delay !== 'number' || delay < 0) delay = 0;
+    clearTimeout(join_interval);
+    if (!pluginSettings.enabled || !SUPPORTED_HOSTS.has(hostname)) {
+        join_interval = null;
+        return;
+    }
+    join_interval = setTimeout(function () {
+        join_interval = null;
+        join();
+    }, delay);
 }
 
 function query(target, fun, alt = null) {
@@ -131,6 +271,7 @@ function spotifyIsPlaying(el) {
 }
 
 function start_transfer() {
+    clearInterval(transfer_interval);
     transfer_interval = setInterval(() => {
         // TODO: maybe add more?
         if (hostname === 'soundcloud.com') {
@@ -330,16 +471,37 @@ function start_transfer() {
     }, 500);
 }
 
-if (hostname === 'soundcloud.com' ||
-    hostname === 'music.youtube.com' ||
-    hostname === 'www.youtube.com' ||
-    hostname === 'open.spotify.com' ||
-    hostname === "www.bilibili.com") {
-    join();
-};
+if (chrome?.storage?.onChanged) {
+    chrome.storage.onChanged.addListener(function (changes, areaName) {
+        if (areaName !== 'local') return;
+        var update = {};
+        if (Object.prototype.hasOwnProperty.call(changes, 'pluginEnabled')) {
+            update.enabled = changes.pluginEnabled.newValue !== false;
+        }
+        if (Object.prototype.hasOwnProperty.call(changes, 'pluginPort')) {
+            update.port = changes.pluginPort.newValue;
+        }
+        if (Object.keys(update).length > 0) {
+            updateSettings(update);
+        }
+    });
+}
+
+if (SUPPORTED_HOSTS.has(hostname)) {
+    if (chrome?.storage?.local?.get) {
+        chrome.storage.local.get({ pluginEnabled: true, pluginPort: DEFAULT_PORT }, function (items) {
+            updateSettings({
+                enabled: items.pluginEnabled !== false,
+                port: items.pluginPort
+            });
+        });
+    } else {
+        updateSettings({ enabled: true, port: DEFAULT_PORT });
+    }
+} else {
+    pluginSettings.enabled = false;
+}
 
 window.addEventListener('beforeunload', function () {
-    if (conn && conn.readyState === WebSocket.OPEN) {
-        conn.send(`closed - ${hostname} (${guid})`);
-    }
+    notifyServerClosed('page closing');
 });

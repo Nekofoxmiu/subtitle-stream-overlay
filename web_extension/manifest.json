@@ -16,9 +16,13 @@
       "js": ["nowplaying_client.js"]
     }
   ],
-  "permissions": ["scripting"],
+  "permissions": ["scripting", "storage"],
   "host_permissions": ["https://www.youtube.com/*"],
   "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "subtitle-stream-overlay 插件控制",
+    "default_popup": "popup.html"
+  },
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
