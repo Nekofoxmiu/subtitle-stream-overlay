@@ -16,6 +16,9 @@
       "js": ["nowplaying_client.js"]
     }
   ],
+  "permissions": ["scripting"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "background": { "service_worker": "background.js" },
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",

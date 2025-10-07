@@ -7,6 +7,36 @@ var join_retry_time = 2000
 var lastStatus = 'stopped';
 var guid = generateGuid();
 
+
+if (location.host === 'www.youtube.com') {
+    chrome.runtime.sendMessage({ type: 'INJECT_YT_PROBE' }, () => { });
+}
+
+let ytLiveFlag = null;
+let ytLiveDurationMs = null;
+
+window.addEventListener('message', (e) => {
+    if (e.source === window && e.data && e.data.type === 'YT_LIVE_STATUS') {
+        ytLiveFlag = !!e.data.live;
+        ytLiveDurationMs = (typeof e.data.durationMs === 'number' && e.data.durationMs >= 0)
+            ? Math.floor(e.data.durationMs)
+            : null;
+    }
+});
+
+function detectLiveFallbackYouTube() {
+    // 1) 進度條 Live 徽章 / 文字
+    if (document.querySelector('.ytp-live-badge, .ytp-time-display.ytp-live')) return true;
+    // 2) microformat meta
+    const m = document.querySelector('meta[itemprop="isLiveBroadcast"]');
+    if (m) {
+        const v = (m.getAttribute('content') || '').toLowerCase();
+        if (v === 'true') return true;
+    }
+    return false;
+}
+
+
 function getCurrentPageUrl() {
     return window.location.href;
 }
@@ -104,20 +134,20 @@ function sendPlaybackUpdate(data) {
 };
 
 function spotifyIsPlaying(el) {
-                const pressed = el.getAttribute('aria-pressed');
-                if (pressed !== null) return pressed === 'true';
+    const pressed = el.getAttribute('aria-pressed');
+    if (pressed !== null) return pressed === 'true';
 
-                // 回退到 aria-label：支援多語系關鍵字
-                const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-                // 「暫停/Pause」通常表示目前正在播放（按鈕動作是暫停）
-                const pauseKeys = ['暫停', '暂停', 'pause', 'pausa', 'pausear'];
-                const playKeys = ['播放', 'play', 'reproducir', 'lecture'];
+    // 回退到 aria-label：支援多語系關鍵字
+    const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+    // 「暫停/Pause」通常表示目前正在播放（按鈕動作是暫停）
+    const pauseKeys = ['暫停', '暂停', 'pause', 'pausa', 'pausear'];
+    const playKeys = ['播放', 'play', 'reproducir', 'lecture'];
 
-                if (pauseKeys.some(k => label.includes(k))) return true;   // 正在播放
-                if (playKeys.some(k => label.includes(k))) return false;  // 已暫停
-                // 無法判斷時回傳 null 或自訂預設
-                return null;
-            }
+    if (pauseKeys.some(k => label.includes(k))) return true;   // 正在播放
+    if (playKeys.some(k => label.includes(k))) return false;  // 已暫停
+    // 無法判斷時回傳 null 或自訂預設
+    return null;
+}
 
 function start_transfer() {
     transfer_interval = setInterval(() => {
@@ -185,10 +215,33 @@ function start_transfer() {
             progress = query('video', e => e.currentTime * 1000);
 
             // 檢測觀看的影片是否正在直播中
-            if (document.querySelector('#movie_player > div.ytp-chrome-bottom > div.ytp-chrome-controls > div.ytp-left-controls > div.ytp-time-display.notranslate.ytp-live > button')) {
-                is_live = true;
-                duration -= 60 * 60 * 1000; // 直播的 duration 會多一個小時，扣掉
+            is_live = (ytLiveFlag !== null) ? ytLiveFlag : detectLiveFallbackYouTube();
+
+            //是直播且window.location.href不是shorts，由於從直播頁點shorts，直播頁面會在背景會誤顯示true
+            const isShorts = /youtube\.com\/shorts\//.test(window.location.href);
+
+            if (is_live && !isShorts) {
+                if (ytLiveDurationMs != null) {
+                    duration = ytLiveDurationMs;
+                }
             }
+            else {
+                is_live = false
+            }
+
+
+            if (!duration || !progress) {
+                const videos = document.querySelectorAll('video');
+                for (const v of videos) {
+                    if (v.duration > 0 && v.currentTime >= 0) {
+                        duration = v.duration * 1000;
+                        progress = v.currentTime * 1000;
+                        break;
+                    }
+                }
+            }
+
+            console.log(progress, duration)
 
             // 改用 mediaSession 來獲取作者資訊
             artists = [navigator.mediaSession.metadata.artist];
