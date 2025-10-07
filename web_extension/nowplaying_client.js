@@ -37,17 +37,12 @@ function detectLiveFallbackYouTube() {
 }
 
 
-function getCurrentPageUrl() {
-    return window.location.href;
-}
-
 function join() {
     conn = new WebSocket(FETCH_URL);
 
     conn.addEventListener('open', function (event) {
         console.log('Connection to Now Playing server established');
-        const pageUrl = getCurrentPageUrl();
-        conn.send(`connected - ${hostname} (${guid}) | ${pageUrl}`);
+        conn.send(`connected - ${hostname} (${guid})`);
         start_transfer();
         if (join_interval) {
             clearTimeout(join_interval);
@@ -118,8 +113,7 @@ function sendPlaybackUpdate(data) {
         return;
     }
 
-    const pageUrl = getCurrentPageUrl();
-    const payload = { ...data, status, pageUrl };
+    const payload = { ...data, status };
 
     if (status === 'playing') {
         lastStatus = 'playing';
@@ -241,8 +235,6 @@ function start_transfer() {
                 }
             }
 
-            console.log(progress, duration)
-
             // 改用 mediaSession 來獲取作者資訊
             artists = [navigator.mediaSession.metadata.artist];
             status = navigator.mediaSession.playbackState; // playbackState = playing, paused, none
@@ -268,6 +260,10 @@ function start_transfer() {
             title = title.replace("(Original Mix)", "");
 
             if (status === 'playing' && progress <= 0) {
+                return;
+            }
+
+            if (status === 'none') {
                 return;
             }
 
@@ -355,7 +351,6 @@ if (hostname === 'soundcloud.com' ||
 
 window.addEventListener('beforeunload', function () {
     if (conn && conn.readyState === WebSocket.OPEN) {
-        const pageUrl = getCurrentPageUrl();
-        conn.send(`closed - ${hostname} (${guid}) | ${pageUrl}`);
+        conn.send(`closed - ${hostname} (${guid})`);
     }
 });

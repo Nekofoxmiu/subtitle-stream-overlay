@@ -87,7 +87,6 @@ function normalizeNowPlayingPayload(raw) {
     ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
     : [];
   const normalizedSongLink = normalizeRemoteUrl(raw?.song_link ?? raw?.songLink);
-  const normalizedPageUrl = normalizeRemoteUrl(raw?.pageUrl ?? raw?.page_url ?? normalizedSongLink);
   return {
     guid: normalizeStr(raw?.guid),
     cover: normalizeStr(raw?.cover),
@@ -99,7 +98,6 @@ function normalizeNowPlayingPayload(raw) {
     durationMs,
     durationSeconds: durationMs / 1000,
     songLink: normalizedSongLink,
-    pageUrl: normalizedPageUrl,
     platform: normalizeStr(raw?.platform),
     isLive: raw?.is_live === true,
     receivedAt: Date.now()
@@ -143,11 +141,11 @@ function normalizeRemoteUrl(value) {
   }
 }
 
-function buildGuidSessionKey(guid, pageUrl) {
+function buildGuidSessionKey(guid, songLink) {
   const normalizedGuid = sanitizeRemoteIdentity(guid);
   if (!normalizedGuid) return '';
-  const normalizedUrl = normalizeRemoteUrl(pageUrl);
-  return normalizedUrl ? `guid:${normalizedGuid}|url:${normalizedUrl}` : `guid:${normalizedGuid}`;
+  const normalizedSong = normalizeRemoteUrl(songLink);
+  return normalizedSong ? `guid:${normalizedGuid}|song:${normalizedSong}` : `guid:${normalizedGuid}`;
 }
 
 function analyseFontName(name) {
@@ -452,9 +450,7 @@ export class OverlayServer {
     const host = (match[1] || '').trim();
     const guid = (match[2] || '').trim();
     if (!guid) return;
-    const rawUrl = (match[3] || '').trim();
-    const pageUrl = normalizeRemoteUrl(rawUrl);
-    const key = buildGuidSessionKey(guid, pageUrl);
+    const key = buildGuidSessionKey(guid);
     const now = Date.now();
     if (closed) {
       let sessionKey = key;
@@ -497,7 +493,6 @@ export class OverlayServer {
     if (!session) session = { lastPlayTs: 0, status: 'unknown' };
     session.host = host;
     session.guid = guid;
-    if (pageUrl) session.pageUrl = pageUrl;
     session.connected = true;
     session.lastSeen = now;
     if (!session.lastUpdate) session.lastUpdate = now;
@@ -509,7 +504,7 @@ export class OverlayServer {
   }
   deriveSessionKey(payload) {
     if (!payload || typeof payload !== 'object') return 'unknown';
-    const guidKey = buildGuidSessionKey(payload.guid, payload.pageUrl || payload.songLink);
+    const guidKey = buildGuidSessionKey(payload.guid, payload.songLink);
     if (guidKey) return guidKey;
     const songLink = normalizeRemoteUrl(payload.songLink);
     if (songLink) return `song:${songLink}`;
@@ -608,8 +603,6 @@ export class OverlayServer {
       session.lastPlayTs = 0;
     }
     if (normalized.guid) session.guid = normalized.guid;
-    const effectivePageUrl = normalized.pageUrl || normalized.songLink || session.pageUrl || '';
-    if (effectivePageUrl) session.pageUrl = normalizeRemoteUrl(effectivePageUrl);
     if (!session.host && normalized.platform) session.host = normalized.platform;
     if (status === 'playing' && previousStatus !== 'playing') {
       session.lastPlayTs = now;
@@ -675,7 +668,6 @@ export class OverlayServer {
         lastPlayTs: session?.lastPlayTs || 0,
         connected: session?.connected !== false,
         guid: session?.guid || info?.guid || '',
-        pageUrl: session?.pageUrl || info?.pageUrl || '',
         nowPlaying: info ? {
           title: info.title || '',
           artists: Array.isArray(info.artists) ? info.artists : [],

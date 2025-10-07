@@ -981,7 +981,6 @@ function normalizeNowPlayingPayload(raw) {
     ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
     : [];
   const normalizedSongLink = normalizeRemoteUrl(raw.song_link ?? raw.songLink);
-  const normalizedPageUrl = normalizeRemoteUrl(raw.pageUrl ?? raw.page_url ?? normalizedSongLink);
   return {
     guid: normalizeStr(raw.guid),
     cover: normalizeStr(raw.cover),
@@ -993,7 +992,6 @@ function normalizeNowPlayingPayload(raw) {
     durationMs,
     durationSeconds: durationMs / 1000,
     songLink: normalizedSongLink,
-    pageUrl: normalizedPageUrl,
     platform: normalizeStr(raw.platform),
     isLive: raw.is_live === true,
     receivedAt: Date.now()
@@ -1597,12 +1595,10 @@ function offsetsEqual(a, b) {
 function getRemoteMediaKey(remote = state.remoteNowPlaying) {
   if (!state.useRemoteTimeline) return '';
   if (!remote || typeof remote !== 'object') return '';
-  const link = normalizeRemoteUrl(remote.songLink);
-  if (link) return `remote:song:${link}`;
-  const pageUrl = normalizeRemoteUrl(remote.pageUrl);
   const guid = sanitizeRemoteIdentity(remote.guid);
-  if (guid && pageUrl) return `remote:guid:${guid}|url:${pageUrl}`;
-  if (pageUrl) return `remote:url:${pageUrl}`;
+  const link = normalizeRemoteUrl(remote.songLink);
+  if (guid && link) return `remote:guid:${guid}|song:${link}`;
+  if (link) return `remote:song:${link}`;
   if (guid) return `remote:guid:${guid}`;
   const platform = typeof remote.platform === 'string' ? remote.platform.trim().toLowerCase() : '';
   const title = typeof remote.title === 'string' ? remote.title.trim() : '';
