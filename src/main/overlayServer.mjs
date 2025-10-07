@@ -141,6 +141,33 @@ function normalizeRemoteUrl(value) {
   }
 }
 
+function normalizeArtistList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((name) => (typeof name === 'string' ? name.trim() : '')).filter(Boolean);
+}
+
+function hasNowPlayingMetadataChanged(prev, next) {
+  if (!prev && !next) return false;
+  if (!prev || !next) return true;
+
+  const normalizeStr = (value) => (typeof value === 'string' ? value.trim() : '');
+  if (normalizeStr(prev.title) !== normalizeStr(next.title)) return true;
+  if (normalizeStr(prev.guid) !== normalizeStr(next.guid)) return true;
+  if (normalizeStr(prev.platform) !== normalizeStr(next.platform)) return true;
+  if (normalizeStr(prev.songLink) !== normalizeStr(next.songLink)) return true;
+  if (normalizeStr(prev.cover) !== normalizeStr(next.cover)) return true;
+  if (Boolean(prev.isLive) !== Boolean(next.isLive)) return true;
+
+  const prevArtists = normalizeArtistList(prev.artists);
+  const nextArtists = normalizeArtistList(next.artists);
+  if (prevArtists.length !== nextArtists.length) return true;
+  for (let i = 0; i < prevArtists.length; i += 1) {
+    if (prevArtists[i] !== nextArtists[i]) return true;
+  }
+
+  return false;
+}
+
 function buildGuidSessionKey(guid, songLink) {
   const normalizedGuid = sanitizeRemoteIdentity(guid);
   if (!normalizedGuid) return '';
@@ -591,6 +618,7 @@ export class OverlayServer {
       if (this.activeSessionKey === existingKey) this.activeSessionKey = sessionKey;
       if (this.selectedSessionKey === existingKey) this.selectedSessionKey = sessionKey;
     }
+    const previousInfo = existing?.nowPlaying || null;
     const previousStatus = normalizeRemoteStatus(existing?.status);
     const status = normalized.status || 'unknown';
 
@@ -646,6 +674,7 @@ export class OverlayServer {
 
     const statusChanged = previousStatus !== status;
     const listShouldUpdate = statusChanged
+      || hasNowPlayingMetadataChanged(previousInfo, normalized)
       || previousActive !== this.activeSessionKey
       || previousSelected !== this.selectedSessionKey;
     if (listShouldUpdate) {

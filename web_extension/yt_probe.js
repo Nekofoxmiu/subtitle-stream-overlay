@@ -1,21 +1,16 @@
 (function(){
   const pick = (o, p) => { try { return p.split('.').reduce((x,k)=>x&&x[k], o); } catch(_) { return undefined; } };
 
-  function hasLiveBadge() {
-    return !!document.querySelector('.ytp-live-badge, .ytp-time-display.ytp-live');
-  }
   function computeIsLive() {
     const flexy = document.querySelector('ytd-watch-flexy');
     const a = !!pick(flexy, 'playerData.videoDetails.isLive');
     const b = !!pick(flexy, 'playerData.microformat.playerMicroformatRenderer.liveBroadcastDetails.isLiveNow');
-    const c = hasLiveBadge();
-    const d = (() => {
-      const m = document.querySelector('meta[itemprop="isLiveBroadcast"]');
+    const c = (() => {
+      const m = document.querySelector('div.ytp-time-display.notranslate.ytp-live > span.ytp-time-wrapper > div > button');
       if (!m) return false;
-      const v = (m.getAttribute('content') || '').toLowerCase();
-      return v === 'true';
+      return true;
     })();
-    return a || b || c || d;
+    return a || b || c;
   }
 
   function getStartTimestampISO() {

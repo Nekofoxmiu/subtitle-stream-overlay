@@ -24,19 +24,6 @@ window.addEventListener('message', (e) => {
     }
 });
 
-function detectLiveFallbackYouTube() {
-    // 1) 進度條 Live 徽章 / 文字
-    if (document.querySelector('.ytp-live-badge, .ytp-time-display.ytp-live')) return true;
-    // 2) microformat meta
-    const m = document.querySelector('meta[itemprop="isLiveBroadcast"]');
-    if (m) {
-        const v = (m.getAttribute('content') || '').toLowerCase();
-        if (v === 'true') return true;
-    }
-    return false;
-}
-
-
 function join() {
     conn = new WebSocket(FETCH_URL);
 
@@ -209,7 +196,7 @@ function start_transfer() {
             progress = query('video', e => e.currentTime * 1000);
 
             // 檢測觀看的影片是否正在直播中
-            is_live = (ytLiveFlag !== null) ? ytLiveFlag : detectLiveFallbackYouTube();
+            is_live = ytLiveFlag || false;
 
             //是直播且window.location.href不是shorts，由於從直播頁點shorts，直播頁面會在背景會誤顯示true
             const isShorts = /youtube\.com\/shorts\//.test(window.location.href);
@@ -223,8 +210,10 @@ function start_transfer() {
                 is_live = false
             }
 
-
-            if (!duration || !progress) {
+            // 由於混亂的 shorts 機制，從直播切換到 shorts 的時候會導致網頁上出現兩個 <video>
+            // 並且該兩個 <video> 的 baseURI 都會被改成 shorts 的
+            // 但其中一個是假的錯誤的 live 殘餘容器問詢其會導致出現 duration 為 NaN 甚至是各種不可預期的值的狀況
+            if ((!duration || !progress) && !is_live && isShorts) {
                 const videos = document.querySelectorAll('video');
                 for (const v of videos) {
                     if (v.duration > 0 && v.currentTime >= 0) {
@@ -264,7 +253,7 @@ function start_transfer() {
             }
 
             if (status === 'none') {
-                return;
+                status = 'playing';
             }
 
             const flooredProgress = Math.floor(progress);
