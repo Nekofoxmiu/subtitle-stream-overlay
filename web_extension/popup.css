@@ -19,7 +19,7 @@
 
 body {
   margin: 0;
-  min-width: 320px;
+  min-width: 420px;
   background: var(--bg-gradient);
   color: var(--text-primary);
   display: flex;

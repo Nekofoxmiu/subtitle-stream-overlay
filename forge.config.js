@@ -24,6 +24,16 @@ module.exports = {
       config: {},
     },
   ],
+  publishers: [
+    {
+      name: '@electron-forge/publisher-github',
+      config: {
+        repository: { owner: 'Nekofoxmiu', name: 'https://github.com/Nekofoxmiu/subtitle-stream-overlay' },
+        prerelease: false,
+        draft: false
+      }
+    }
+  ],
   plugins: [
     {
       name: '@electron-forge/plugin-auto-unpack-natives',
