@@ -4,6 +4,7 @@ const dom = {
   appShell: document.querySelector('.app-shell'),
   binInfo: $('#binInfo'),
   mainArea: document.querySelector('.main-area'),
+  previewArea: document.querySelector('.preview-area'),
   controlCard: $('#controlCard'),
   controlToggle: $('#controlCardToggle'),
   controlRestore: $('#controlCardRestore'),
@@ -18,6 +19,14 @@ const dom = {
   video: $('#localVideo'),
   videoFile: $('#videoFile'),
   pickVideo: $('#pickVideo'),
+  useRemoteTimelineToggle: $('#useRemoteTimelineToggle'),
+  remoteHud: $('#remoteHud'),
+  remoteHudTitle: $('#remoteHudTitle'),
+  remoteHudSubtitle: $('#remoteHudSubtitle'),
+  remoteHudStatus: $('#remoteHudStatus'),
+  remoteHudCurrent: $('#remoteHudCurrent'),
+  remoteHudDuration: $('#remoteHudDuration'),
+  remoteHudProgressFill: $('#remoteHudProgressFill'),
   ytUrl: $('#ytUrl'),
   fontsPicked: $('#fontsPicked'),
   pickCookies: $('#pickCookies'),
@@ -51,6 +60,656 @@ const dom = {
   binStatusFfmpeg: $('#binStatusFfmpegIcon')
 };
 
+const customSelectRegistry = new Map();
+
+function setupCustomSelects(root = document) {
+  if (!root || typeof root.querySelectorAll !== 'function') return;
+  const selects = Array.from(root.querySelectorAll('select'));
+  selects.forEach((select) => {
+    if (!select || customSelectRegistry.has(select)) return;
+    const controller = enhanceCustomSelect(select);
+    if (controller) {
+      customSelectRegistry.set(select, controller);
+      controller.refresh({ rebuildOptions: true });
+    }
+  });
+}
+
+function refreshCustomSelect(select, { rebuildOptions = false } = {}) {
+  if (!select) return;
+  const controller = customSelectRegistry.get(select);
+  if (controller) {
+    controller.refresh({ rebuildOptions });
+  }
+}
+
+function enhanceCustomSelect(select) {
+  if (!select || select.dataset?.customSelect === 'enhanced') return null;
+  const parent = select.parentElement;
+  if (!parent) return null;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'custom-select';
+  const inlineStyle = select.getAttribute('style');
+  if (inlineStyle) wrapper.setAttribute('style', inlineStyle);
+  parent.insertBefore(wrapper, select);
+  wrapper.appendChild(select);
+
+  if (select.dataset.customSelectPlacement === 'dropup') {
+    wrapper.classList.add('custom-select--dropup');
+  }
+
+  select.classList.add('custom-select__native');
+  select.dataset.customSelect = 'enhanced';
+  select.setAttribute('aria-hidden', 'true');
+  select.tabIndex = -1;
+
+  const uniqueKey = select.id || select.name || `custom-select-${customSelectRegistry.size + 1}`;
+  const listId = `${uniqueKey}-listbox`;
+  const displayId = `${uniqueKey}-value`;
+  const triggerId = `${uniqueKey}-trigger`;
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'custom-select__trigger';
+  trigger.id = triggerId;
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('aria-controls', listId);
+
+  const display = document.createElement('span');
+  display.className = 'custom-select__display';
+  const marquee = document.createElement('span');
+  marquee.className = 'custom-select__marquee';
+  marquee.dataset.paused = 'true';
+  marquee.dataset.interacting = 'false';
+  const primaryText = document.createElement('span');
+  primaryText.className = 'custom-select__text';
+  primaryText.id = displayId;
+  const cloneText = document.createElement('span');
+  cloneText.className = 'custom-select__text custom-select__text--clone';
+  marquee.append(primaryText, cloneText);
+  display.appendChild(marquee);
+  trigger.appendChild(display);
+
+  const icon = document.createElement('span');
+  icon.className = 'custom-select__icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="6 9 12 15 18 9"></polyline>
+    </svg>
+  `;
+  trigger.appendChild(icon);
+
+  const list = document.createElement('ul');
+  list.className = 'custom-select__list';
+  list.id = listId;
+  list.setAttribute('role', 'listbox');
+  list.tabIndex = -1;
+  list.hidden = true;
+
+  wrapper.appendChild(trigger);
+  wrapper.appendChild(list);
+
+  const labelIds = [];
+  if (select.id) {
+    const labels = document.querySelectorAll(`label[for="${select.id}"]`);
+    labels.forEach((label, idx) => {
+      if (!label.id) {
+        label.id = `${uniqueKey}-label${idx ? `-${idx}` : ''}`;
+      }
+      label.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        trigger.focus();
+        openMenu();
+      });
+      labelIds.push(label.id);
+    });
+  }
+  if (labelIds.length) {
+    trigger.setAttribute('aria-labelledby', `${labelIds.join(' ')} ${displayId}`.trim());
+  } else {
+    trigger.setAttribute('aria-labelledby', displayId);
+  }
+
+  let optionButtons = [];
+  const optionMarquees = new WeakMap();
+  let activeIndex = -1;
+  let isOpen = false;
+  let mirroredClasses = new Set();
+
+  const restartAnimation = (element) => {
+    if (!element) return;
+    element.classList.remove('is-animating');
+    void element.offsetWidth;
+    element.classList.add('is-animating');
+  };
+
+  const startMarqueeAnimation = (element) => {
+    if (!element) return;
+    element.dataset.interacting = 'true';
+    if (!element.classList.contains('is-marquee')) {
+      element.dataset.paused = 'true';
+      element.classList.remove('is-animating');
+      return;
+    }
+    element.dataset.paused = 'false';
+    restartAnimation(element);
+  };
+
+  const stopMarqueeAnimation = (element) => {
+    if (!element) return;
+    element.dataset.interacting = 'false';
+    element.dataset.paused = 'true';
+    element.classList.remove('is-animating');
+  };
+
+  const hasResizeObserver = typeof ResizeObserver === 'function';
+  const resizeObserver = hasResizeObserver
+    ? new ResizeObserver(() => {
+        updateMarquee();
+      })
+    : null;
+  if (resizeObserver) {
+    resizeObserver.observe(display);
+    resizeObserver.observe(primaryText);
+  } else {
+    window.addEventListener('resize', updateMarquee, { passive: true });
+  }
+
+  const observer = new MutationObserver((mutations) => {
+    let shouldRebuild = false;
+    let shouldRefreshSelection = false;
+    let shouldSyncMeta = false;
+    for (const mutation of mutations) {
+      if (mutation.type === 'childList' || mutation.type === 'characterData') {
+        shouldRebuild = true;
+        continue;
+      }
+      if (mutation.type === 'attributes') {
+        const target = mutation.target;
+        if (target === select) {
+          if (mutation.attributeName === 'style') shouldSyncMeta = true;
+          if (mutation.attributeName === 'class') shouldSyncMeta = true;
+          if (mutation.attributeName === 'disabled') shouldSyncMeta = true;
+        } else if (target instanceof HTMLOptionElement || target instanceof HTMLOptGroupElement) {
+          if (mutation.attributeName === 'label' || mutation.attributeName === 'value') shouldRebuild = true;
+          if (mutation.attributeName === 'disabled') shouldRebuild = true;
+          if (mutation.attributeName === 'selected') shouldRefreshSelection = true;
+        }
+      }
+    }
+    if (shouldRebuild) {
+      rebuildOptions();
+      shouldRefreshSelection = false;
+    }
+    if (shouldRefreshSelection) {
+      updateSelection({ preserveActive: isOpen });
+    }
+    if (shouldSyncMeta || shouldRebuild) {
+      syncDisabledState();
+      syncMirroredClasses();
+      syncInlineStyle();
+      updateMarquee();
+    }
+  });
+  observer.observe(select, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    characterData: true
+  });
+
+  const handleDocumentPointerDown = (event) => {
+    if (!wrapper.contains(event.target)) {
+      closeMenu();
+    }
+  };
+
+  function findNextEnabledIndex(startIndex, step) {
+    const options = select.options;
+    if (!options.length) return -1;
+    let index = startIndex;
+    for (let i = 0; i < options.length; i += 1) {
+      if (index < 0) index = options.length - 1;
+      if (index >= options.length) index = 0;
+      const option = options[index];
+      if (option && !option.disabled) return index;
+      index += step;
+    }
+    return -1;
+  }
+
+  function highlightActive({ scrollIntoView = false } = {}) {
+    const options = select.options;
+    optionButtons.forEach((btn, idx) => {
+      const option = options[idx];
+      const isActive = idx === activeIndex && option && !option.disabled;
+      btn.classList.toggle('is-active', isActive);
+    });
+    if (isOpen && optionButtons[activeIndex]) {
+      trigger.setAttribute('aria-activedescendant', optionButtons[activeIndex].id);
+      if (scrollIntoView) {
+        optionButtons[activeIndex].scrollIntoView({ block: 'nearest' });
+      }
+    } else {
+      trigger.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  function setActiveIndex(index, { scrollIntoView = false } = {}) {
+    const options = select.options;
+    if (!options.length) {
+      activeIndex = -1;
+      highlightActive({ scrollIntoView: false });
+      return;
+    }
+    let target = index;
+    if (target < 0 || target >= options.length || options[target]?.disabled) {
+      target = findNextEnabledIndex(index, 1);
+      if (target === -1) target = findNextEnabledIndex(index, -1);
+    }
+    activeIndex = target;
+    highlightActive({ scrollIntoView });
+  }
+
+  function updateSelection({ preserveActive = false } = {}) {
+    const options = Array.from(select.options);
+    let selectedIndex = select.selectedIndex;
+    if (selectedIndex < 0) {
+      selectedIndex = options.findIndex((option) => option?.selected);
+    }
+    optionButtons.forEach((btn, idx) => {
+      const option = options[idx];
+      const isSelected = option ? option.selected : false;
+      btn.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+    });
+    const selectedOption = options[selectedIndex] || options.find((option) => option && !option.disabled) || null;
+    const label = selectedOption ? (selectedOption.textContent || selectedOption.label || '') : '';
+    if (primaryText.textContent !== label) {
+      primaryText.textContent = label;
+    }
+    if (cloneText.textContent !== label) {
+      cloneText.textContent = label;
+    }
+    if (selectedOption?.title) trigger.title = selectedOption.title;
+    else trigger.removeAttribute('title');
+    if (!preserveActive) {
+      if (selectedIndex != null && selectedIndex >= 0 && options[selectedIndex] && !options[selectedIndex].disabled) {
+        activeIndex = selectedIndex;
+      } else {
+        activeIndex = findNextEnabledIndex(0, 1);
+      }
+    }
+    highlightActive({ scrollIntoView: false });
+    updateMarquee();
+  }
+
+  function stopOptionMarquee(optionEl) {
+    const marqueeParts = optionMarquees.get(optionEl);
+    if (!marqueeParts) return;
+    const { marquee, clone } = marqueeParts;
+    stopMarqueeAnimation(marquee);
+    marquee.classList.remove('is-marquee');
+    if (clone.textContent !== '') {
+      clone.textContent = '';
+    }
+    marquee.style.removeProperty('--marquee-distance');
+    marquee.style.removeProperty('--marquee-duration');
+  }
+
+  function startOptionMarquee(optionEl) {
+    const marqueeParts = optionMarquees.get(optionEl);
+    if (!marqueeParts) return;
+    const { container, marquee, primary, clone } = marqueeParts;
+    const containerWidth = container.offsetWidth;
+    const textWidth = primary.scrollWidth;
+    if (!containerWidth || !textWidth || textWidth <= containerWidth + 2) {
+      stopOptionMarquee(optionEl);
+      return;
+    }
+    const cloneLabel = primary.textContent || '';
+    if (clone.textContent !== cloneLabel) {
+      clone.textContent = cloneLabel;
+    }
+    const gapValue = (() => {
+      const style = window.getComputedStyle(marquee);
+      const gap = parseFloat(style.columnGap || style.gap || '0');
+      return Number.isFinite(gap) ? gap : 0;
+    })();
+    const distance = textWidth + gapValue;
+    const duration = Math.max(6, Math.min(30, distance / 36));
+    marquee.style.setProperty('--marquee-distance', `${distance}px`);
+    marquee.style.setProperty('--marquee-duration', `${duration}s`);
+    marquee.classList.add('is-marquee');
+    startMarqueeAnimation(marquee);
+  }
+
+  function stopAllOptionMarquees() {
+    optionButtons.forEach((btn) => stopOptionMarquee(btn));
+  }
+
+  function rebuildOptions() {
+    optionButtons = [];
+    list.innerHTML = '';
+    Array.from(select.options).forEach((option, index) => {
+      const optionEl = document.createElement('li');
+      optionEl.className = 'custom-select__option';
+      optionEl.setAttribute('role', 'option');
+      optionEl.id = `${listId}-option-${index}`;
+      const optionLabel = option?.textContent || option?.label || '';
+      optionEl.dataset.index = String(index);
+      optionEl.dataset.value = option?.value ?? '';
+      if (option?.title) optionEl.title = option.title;
+      if (option?.disabled) optionEl.setAttribute('aria-disabled', 'true');
+      optionEl.setAttribute('aria-selected', option?.selected ? 'true' : 'false');
+
+      const label = document.createElement('span');
+      label.className = 'custom-select__option-label';
+      const marqueeEl = document.createElement('span');
+      marqueeEl.className = 'custom-select__marquee';
+      marqueeEl.dataset.paused = 'true';
+      marqueeEl.dataset.interacting = 'false';
+      const primaryEl = document.createElement('span');
+      primaryEl.className = 'custom-select__text';
+      primaryEl.textContent = optionLabel;
+      const cloneEl = document.createElement('span');
+      cloneEl.className = 'custom-select__text custom-select__text--clone';
+      marqueeEl.append(primaryEl, cloneEl);
+      label.appendChild(marqueeEl);
+      optionEl.appendChild(label);
+      optionMarquees.set(optionEl, {
+        container: label,
+        marquee: marqueeEl,
+        primary: primaryEl,
+        clone: cloneEl
+      });
+
+      optionEl.addEventListener('click', () => {
+        if (option?.disabled) return;
+        setActiveIndex(index, { scrollIntoView: false });
+        commitIndex(index);
+      });
+      optionEl.addEventListener('pointerenter', () => {
+        if (!isOpen || option?.disabled) return;
+        setActiveIndex(index, { scrollIntoView: false });
+        startOptionMarquee(optionEl);
+      });
+      optionEl.addEventListener('pointerleave', () => {
+        stopOptionMarquee(optionEl);
+      });
+      optionButtons.push(optionEl);
+      list.appendChild(optionEl);
+    });
+    updateSelection({ preserveActive: isOpen });
+  }
+
+  function syncDisabledState() {
+    const disabled = select.disabled;
+    trigger.disabled = disabled;
+    trigger.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    wrapper.classList.toggle('is-disabled', disabled);
+    if (disabled && isOpen) {
+      closeMenu();
+    }
+  }
+
+  function syncMirroredClasses() {
+    const classes = Array.from(select.classList || []).filter((cls) => cls !== 'custom-select__native');
+    const next = new Set(classes);
+    Array.from(mirroredClasses).forEach((cls) => {
+      if (!next.has(cls)) {
+        wrapper.classList.remove(cls);
+        mirroredClasses.delete(cls);
+      }
+    });
+    next.forEach((cls) => {
+      if (cls && !mirroredClasses.has(cls)) {
+        wrapper.classList.add(cls);
+        mirroredClasses.add(cls);
+      }
+    });
+  }
+
+  function syncInlineStyle() {
+    const style = select.getAttribute('style');
+    if (style) wrapper.setAttribute('style', style);
+    else wrapper.removeAttribute('style');
+  }
+
+  function updateMarquee() {
+    const containerWidth = display.offsetWidth;
+    const textWidth = primaryText.scrollWidth;
+    if (!containerWidth || !textWidth) {
+      stopMarqueeAnimation(marquee);
+      marquee.classList.remove('is-marquee');
+      if (cloneText.textContent !== '') {
+        cloneText.textContent = '';
+      }
+      marquee.style.removeProperty('--marquee-distance');
+      marquee.style.removeProperty('--marquee-duration');
+      delete marquee.dataset.marqueeLabel;
+      delete marquee.dataset.marqueeDistance;
+      delete marquee.dataset.marqueeDuration;
+      return;
+    }
+    if (textWidth > containerWidth + 2) {
+      const primaryLabel = primaryText.textContent || '';
+      if (cloneText.textContent !== primaryLabel) {
+        cloneText.textContent = primaryLabel;
+      }
+      const previousLabel = marquee.dataset.marqueeLabel || '';
+      const gapValue = (() => {
+        const style = window.getComputedStyle(marquee);
+        const gap = parseFloat(style.columnGap || style.gap || '0');
+        return Number.isFinite(gap) ? gap : 0;
+      })();
+      const distance = textWidth + gapValue;
+      const duration = Math.max(6, Math.min(30, distance / 36));
+      const distanceValue = `${distance}px`;
+      const durationValue = `${duration}s`;
+      const previousDistance = marquee.dataset.marqueeDistance || '';
+      const previousDuration = marquee.dataset.marqueeDuration || '';
+      const distanceChanged = previousDistance !== distanceValue;
+      const durationChanged = previousDuration !== durationValue;
+      const labelChanged = previousLabel !== primaryLabel;
+      marquee.dataset.marqueeLabel = primaryLabel;
+      marquee.dataset.marqueeDistance = distanceValue;
+      marquee.dataset.marqueeDuration = durationValue;
+      if (marquee.style.getPropertyValue('--marquee-distance') !== distanceValue) {
+        marquee.style.setProperty('--marquee-distance', distanceValue);
+      }
+      if (marquee.style.getPropertyValue('--marquee-duration') !== durationValue) {
+        marquee.style.setProperty('--marquee-duration', durationValue);
+      }
+      const wasMarquee = marquee.classList.contains('is-marquee');
+      if (!wasMarquee) {
+        marquee.classList.add('is-marquee');
+      }
+      const interacting = marquee.dataset.interacting === 'true';
+      const shouldRestart = interacting && (!wasMarquee || labelChanged || distanceChanged || durationChanged);
+      if (shouldRestart) {
+        startMarqueeAnimation(marquee);
+      } else if (!interacting) {
+        marquee.dataset.paused = 'true';
+        marquee.classList.remove('is-animating');
+      }
+    } else {
+      stopMarqueeAnimation(marquee);
+      marquee.classList.remove('is-marquee');
+      if (cloneText.textContent !== '') {
+        cloneText.textContent = '';
+      }
+      marquee.style.removeProperty('--marquee-distance');
+      marquee.style.removeProperty('--marquee-duration');
+      delete marquee.dataset.marqueeLabel;
+      delete marquee.dataset.marqueeDistance;
+      delete marquee.dataset.marqueeDuration;
+    }
+  }
+
+  function moveActive(step) {
+    const options = select.options;
+    if (!options.length) return;
+    if (activeIndex < 0) {
+      setActiveIndex(findNextEnabledIndex(step > 0 ? 0 : options.length - 1, step), { scrollIntoView: true });
+      return;
+    }
+    let index = activeIndex;
+    for (let i = 0; i < options.length; i += 1) {
+      index = (index + step + options.length) % options.length;
+      const option = options[index];
+      if (option && !option.disabled) {
+        setActiveIndex(index, { scrollIntoView: true });
+        return;
+      }
+    }
+  }
+
+  function commitIndex(index) {
+    const options = select.options;
+    const option = options[index];
+    if (!option || option.disabled) return;
+    const previousValue = select.value;
+    select.selectedIndex = index;
+    const changed = select.value !== previousValue;
+    updateSelection({ preserveActive: false });
+    if (changed) {
+      const inputEvent = new Event('input', { bubbles: true });
+      select.dispatchEvent(inputEvent);
+      const changeEvent = new Event('change', { bubbles: true });
+      select.dispatchEvent(changeEvent);
+    }
+    closeMenu({ focusTrigger: true });
+  }
+
+  function openMenu() {
+    if (isOpen || select.disabled) return;
+    isOpen = true;
+    wrapper.classList.add('is-open');
+    trigger.setAttribute('aria-expanded', 'true');
+    list.hidden = false;
+    const initialIndex = select.selectedIndex >= 0 ? select.selectedIndex : findNextEnabledIndex(0, 1);
+    setActiveIndex(initialIndex >= 0 ? initialIndex : 0, { scrollIntoView: true });
+    document.addEventListener('pointerdown', handleDocumentPointerDown, true);
+  }
+
+  function closeMenu({ focusTrigger = false } = {}) {
+    if (!isOpen) return;
+    isOpen = false;
+    wrapper.classList.remove('is-open');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.removeAttribute('aria-activedescendant');
+    list.hidden = true;
+    document.removeEventListener('pointerdown', handleDocumentPointerDown, true);
+    stopAllOptionMarquees();
+    if (focusTrigger) {
+      trigger.focus();
+    }
+  }
+
+  trigger.addEventListener('click', () => {
+    if (select.disabled) return;
+    if (isOpen) closeMenu();
+    else openMenu();
+  });
+
+  trigger.addEventListener('keydown', (event) => {
+    switch (event.key) {
+      case 'ArrowDown':
+      case 'Down':
+        event.preventDefault();
+        if (!isOpen) openMenu();
+        moveActive(1);
+        break;
+      case 'ArrowUp':
+      case 'Up':
+        event.preventDefault();
+        if (!isOpen) openMenu();
+        moveActive(-1);
+        break;
+      case 'Home':
+        event.preventDefault();
+        if (!isOpen) openMenu();
+        setActiveIndex(findNextEnabledIndex(0, 1), { scrollIntoView: true });
+        break;
+      case 'End':
+        event.preventDefault();
+        if (!isOpen) openMenu();
+        setActiveIndex(findNextEnabledIndex(select.options.length - 1, -1), { scrollIntoView: true });
+        break;
+      case ' ': // Space
+      case 'Spacebar':
+      case 'Enter':
+        event.preventDefault();
+        if (isOpen) {
+          commitIndex(activeIndex >= 0 ? activeIndex : select.selectedIndex);
+        } else {
+          openMenu();
+        }
+        break;
+      case 'Escape':
+      case 'Esc':
+        if (isOpen) {
+          event.preventDefault();
+          closeMenu({ focusTrigger: true });
+        }
+        break;
+      case 'Tab':
+        closeMenu();
+        break;
+      default:
+        break;
+    }
+  });
+
+  wrapper.addEventListener('focusout', (event) => {
+    if (!wrapper.contains(event.relatedTarget)) {
+      closeMenu();
+    }
+  });
+
+  const resumeTriggerMarquee = () => {
+    startMarqueeAnimation(marquee);
+  };
+  const pauseTriggerMarquee = () => {
+    stopMarqueeAnimation(marquee);
+  };
+
+  trigger.addEventListener('mouseenter', resumeTriggerMarquee);
+  trigger.addEventListener('mouseleave', pauseTriggerMarquee);
+  trigger.addEventListener('focus', resumeTriggerMarquee);
+  trigger.addEventListener('blur', pauseTriggerMarquee);
+
+  select.addEventListener('change', () => {
+    updateSelection({ preserveActive: isOpen });
+    syncDisabledState();
+    syncMirroredClasses();
+  });
+  select.addEventListener('input', () => {
+    updateSelection({ preserveActive: isOpen });
+    syncDisabledState();
+    syncMirroredClasses();
+  });
+
+  const refreshController = ({ rebuildOptions: shouldRebuild = false } = {}) => {
+    if (shouldRebuild) {
+      rebuildOptions();
+    } else {
+      updateSelection({ preserveActive: isOpen });
+    }
+    syncDisabledState();
+    syncMirroredClasses();
+    syncInlineStyle();
+    updateMarquee();
+  };
+
+  return {
+    refresh: refreshController
+  };
+}
+
 const videoCacheControls = createCacheSelector(dom.videoFile?.closest('.row'), {
   searchPlaceholder: '搜尋影片或音訊...'
 });
@@ -62,6 +721,8 @@ const subsCacheControls = createCacheSelector(dom.pickSubs?.closest('.row'), {
 });
 dom.subsCacheSelect = subsCacheControls?.select || null;
 dom.subsCacheSearch = subsCacheControls?.search || null;
+
+setupCustomSelects();
 
 const state = {
   currentAssText: '',
@@ -75,6 +736,9 @@ const state = {
   activeSubsId: '',
   videoSearch: '',
   subsSearch: '',
+  remoteSessions: [],
+  remoteSelectedKey: '',
+  remoteActiveSessionKey: '',
   objectUrl: '',
   binProgress: new Map(),
   binInfoRefreshTimer: null,
@@ -83,6 +747,16 @@ const state = {
   downloadProgressStarted: false,
   downloadStatusMessage: '',
   playerVolume: 1,
+  useRemoteTimeline: false,
+  remoteNowPlaying: null,
+  remoteLastGuid: '',
+  remoteLastUpdate: 0,
+  remoteMediaKey: '',
+  remoteProgressTimer: null,
+  remoteCoverObjectUrl: '',
+  remoteCoverSource: '',
+  remoteCoverAbort: null,
+  remoteCoverToken: 0,
   subtitleOffsetMode: 'advance',
   subtitleOffsetSeconds: 0,
   subtitleOffsetDefaults: { mode: 'advance', seconds: 0 },
@@ -134,17 +808,26 @@ function normalizeDimension(raw, fallback) {
   return parsed;
 }
 
-const persistVolumeSetting = debounce((volume) => {
+function persistPlayerConfig({ volume = state.playerVolume, useRemoteTimeline = state.useRemoteTimeline } = {}) {
   if (!window?.api?.setConfig) return;
+  const payload = {
+    volume: clampVolume(volume),
+    useRemoteTimeline: Boolean(useRemoteTimeline)
+  };
   try {
-    Promise.resolve(window.api.setConfig({ player: { volume } })).catch((err) => {
-      console.error('[config] 無法儲存音量', err);
+    Promise.resolve(window.api.setConfig({ player: payload })).catch((err) => {
+      console.error('[config] failed to save player config', err);
     });
   } catch (err) {
-    console.error('[config] 無法儲存音量', err);
+    console.error('[config] failed to save player config', err);
   }
-}, 240);
+}
 
+const persistVolumeSetting = debounce((volume) => {
+  const normalized = clampVolume(volume);
+  state.playerVolume = normalized;
+  persistPlayerConfig({ volume: normalized });
+}, 240);
 /* ---------------- Overlay 時間同步 ---------------- */
 class OverlaySync {
   constructor(videoEl) {
@@ -152,22 +835,96 @@ class OverlaySync {
     this.timer = null;
     this.port = 59837;
     this.video = videoEl;
+    this.pendingTime = null;
+    this.nowPlayingHandler = null;
+    this.remoteSessionsHandler = null;
+    this.pendingSessionKey = null;
+
+    this.handleWsOpen = this.handleWsOpen.bind(this);
+    this.handleWsClose = this.handleWsClose.bind(this);
+    this.handleWsError = this.handleWsError.bind(this);
+    this.handleWsMessage = this.handleWsMessage.bind(this);
+  }
+  setNowPlayingHandler(handler) {
+    this.nowPlayingHandler = typeof handler === 'function' ? handler : null;
+  }
+  setRemoteSessionsHandler(handler) {
+    this.remoteSessionsHandler = typeof handler === 'function' ? handler : null;
   }
   connect(port) {
-    if (this.port === port && this.ws && this.ws.readyState === 1) return;
-    this.port = port;
-    if (this.ws) {
+    const parsed = Number.parseInt(port, 10);
+    const targetPort = Number.isFinite(parsed) && parsed > 0 ? parsed : this.port;
+    const samePort = this.ws?.url ? this.ws.url.endsWith(`:${targetPort}`) : false;
+    if (this.ws && samePort) {
+      const ready = this.ws.readyState;
+      if (ready === 1 || ready === 0) {
+        this.port = targetPort;
+        return;
+      }
+      this.detachWs(this.ws);
+      try { this.ws.close(); } catch { /* noop */ }
+    } else if (this.ws) {
+      this.detachWs(this.ws);
       try { this.ws.close(); } catch { /* noop */ }
     }
-    this.ws = new WebSocket(`ws://localhost:${port}`);
+    this.port = targetPort;
+    const ws = new WebSocket(`ws://localhost:${targetPort}`);
+    this.ws = ws;
+    this.attachWs(ws);
+  }
+  attachWs(ws) {
+    ws.addEventListener('open', this.handleWsOpen);
+    ws.addEventListener('close', this.handleWsClose);
+    ws.addEventListener('error', this.handleWsError);
+    ws.addEventListener('message', this.handleWsMessage);
+  }
+  detachWs(ws) {
+    ws.removeEventListener('open', this.handleWsOpen);
+    ws.removeEventListener('close', this.handleWsClose);
+    ws.removeEventListener('error', this.handleWsError);
+    ws.removeEventListener('message', this.handleWsMessage);
+  }
+  handleWsOpen() {
+    if (this.pendingTime != null) {
+      const time = this.pendingTime;
+      this.pendingTime = null;
+      this.sendTime(time);
+    }
+    if (this.pendingSessionKey != null) {
+      const key = this.pendingSessionKey;
+      this.pendingSessionKey = null;
+      this.setActiveSessionKey(key);
+    }
+  }
+  handleWsClose(event) {
+    if (event?.target) this.detachWs(event.target);
+    if (event?.target === this.ws) {
+      this.ws = null;
+    }
+  }
+  handleWsError() {
+    // suppress connection errors to keep renderer logs quiet
+  }
+  handleWsMessage(event) {
+    if (!event?.data) return;
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (!data || typeof data !== 'object') return;
+    if (data.type === 'nowPlaying' && data.payload) {
+      this.nowPlayingHandler?.(data.payload);
+    } else if (data.type === 'remoteSessions') {
+      const payload = data.payload && typeof data.payload === 'object' ? data.payload : {};
+      this.remoteSessionsHandler?.(payload);
+    } else if (!data.type && looksLikeNowPlayingPayload(data)) {
+      this.nowPlayingHandler?.(data);
+    }
   }
   start() {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      if (!this.ws || this.ws.readyState !== 1) return;
-      const t = Number(this.video.currentTime || 0);
+      const t = Number(this.video?.currentTime || 0);
       if (!Number.isFinite(t)) return;
-      this.ws.send(JSON.stringify({ type: 'setTime', payload: { t } }));
+      this.sendTime(t);
     }, 33);
   }
   stop() {
@@ -175,10 +932,519 @@ class OverlaySync {
     clearInterval(this.timer);
     this.timer = null;
   }
+  sendTime(time) {
+    if (typeof time !== 'number' || !Number.isFinite(time)) return;
+    const ws = this.ws;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'setTime', payload: { t: time } }));
+    } else {
+      this.pendingTime = time;
+    }
+  }
+  setActiveSessionKey(key) {
+    const normalized = typeof key === 'string' ? key : '';
+    const ws = this.ws;
+    const message = JSON.stringify({ type: 'setActiveSession', payload: { key: normalized } });
+    if (ws && ws.readyState === 1) {
+      try { ws.send(message); } catch { /* noop */ }
+      this.pendingSessionKey = null;
+    } else {
+      this.pendingSessionKey = normalized;
+    }
+  }
 }
 
 const overlaySync = new OverlaySync(dom.video);
+overlaySync.setNowPlayingHandler(handleRemoteNowPlaying);
+overlaySync.setRemoteSessionsHandler(handleRemoteSessionsUpdate);
+function looksLikeNowPlayingPayload(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  if (typeof raw.progress === 'number' || typeof raw.progressMs === 'number') return true;
+  if (typeof raw.duration === 'number' || typeof raw.durationMs === 'number') return true;
+  if (typeof raw.guid === 'string' && raw.guid) return true;
+  if (typeof raw.title === 'string' && raw.title) return true;
+  return false;
+}
 
+function normalizeNowPlayingPayload(raw) {
+  if (!looksLikeNowPlayingPayload(raw)) return null;
+  const toPositiveNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) && num >= 0 ? num : 0;
+  };
+  const progressMs = toPositiveNumber(raw.progress ?? raw.progressMs);
+  const durationMs = toPositiveNumber(raw.duration ?? raw.durationMs);
+  const clampedProgress = durationMs > 0 ? Math.min(progressMs, durationMs) : progressMs;
+  const normalizeStr = (value) => (typeof value === 'string' ? value.trim() : '');
+  const status = normalizeRemoteStatus(raw.status);
+  const artists = Array.isArray(raw.artists)
+    ? raw.artists.map((name) => normalizeStr(name)).filter(Boolean)
+    : [];
+  const normalizedSongLink = normalizeRemoteUrl(raw.song_link ?? raw.songLink);
+  return {
+    guid: normalizeStr(raw.guid),
+    cover: normalizeStr(raw.cover),
+    title: normalizeStr(raw.title),
+    artists,
+    status,
+    progressMs: clampedProgress,
+    progressSeconds: clampedProgress / 1000,
+    durationMs,
+    durationSeconds: durationMs / 1000,
+    songLink: normalizedSongLink,
+    platform: normalizeStr(raw.platform),
+    isLive: raw.is_live === true,
+    receivedAt: Date.now(),
+    reset: raw.reset === true
+  };
+}
+
+function sanitizeRemoteIdentity(value, { lower = false } = {}) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  return lower ? trimmed.toLowerCase() : trimmed;
+}
+
+function normalizeRemoteStatus(value) {
+  const normalized = sanitizeRemoteIdentity(value, { lower: true });
+  if (!normalized) return 'unknown';
+  if (normalized === 'playing' || normalized === 'play' || normalized === 'streaming') return 'playing';
+  if (normalized === 'paused' || normalized === 'pause' || normalized === 'pausing' || normalized === 'stopped' || normalized === 'stop' || normalized === 'stopping') return 'paused';
+  if (normalized === 'waiting' || normalized === 'buffering' || normalized === 'loading' || normalized === 'idle' || normalized === 'pending' || normalized === 'queued' || normalized === 'queue' || normalized === 'ready' || normalized === 'connecting') return 'unknown';
+  if (normalized === 'finished' || normalized === 'ending' || normalized === 'ended' || normalized === 'complete' || normalized === 'completed') return 'paused';
+  return normalized;
+}
+
+function normalizeRemoteUrl(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    const url = new URL(trimmed);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
+function handleRemoteNowPlaying(raw) {
+  const payload = normalizeNowPlayingPayload(raw);
+  if (!payload) return;
+  if (payload.reset) {
+    state.remoteNowPlaying = null;
+    state.remoteMediaKey = '';
+    state.remoteLastGuid = '';
+    state.remoteLastUpdate = Date.now();
+    stopRemoteProgressTimer();
+    if (state.useRemoteTimeline) {
+      clearRemoteCover();
+      if (dom.video) {
+        dom.video.dataset.remoteStatus = 'unknown';
+        dom.video.classList.remove('is-remote-playing', 'is-remote-paused');
+      }
+      applyRemoteMediaUiState();
+      updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+    }
+    updateRemotePlayerUi();
+    updateActiveCacheInfo();
+    if (state.useRemoteTimeline) {
+      applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
+    }
+    return;
+  }
+  const previousKey = state.remoteMediaKey || '';
+  const derivedKey = getRemoteMediaKey(payload) || '';
+  state.remoteNowPlaying = payload;
+  if (payload.guid) state.remoteLastGuid = payload.guid;
+  state.remoteLastUpdate = Number.isFinite(payload.receivedAt)
+    ? payload.receivedAt
+    : Date.now();
+  if (derivedKey) state.remoteMediaKey = derivedKey;
+  if (state.useRemoteTimeline) {
+    const keyChanged = derivedKey && derivedKey !== previousKey;
+    applyRemoteTimeline(payload);
+    if (keyChanged && state.activeSubsId) {
+      applySubtitleOffsetForSelection({ subsId: state.activeSubsId, notify: true });
+    }
+    applyRemoteMediaUiState();
+    updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+  }
+  updateRemotePlayerUi(payload);
+  const effectiveStatus = getRemotePlaybackStatus(payload);
+  if (state.useRemoteTimeline && effectiveStatus === 'playing') {
+    startRemoteProgressTimer();
+  } else {
+    stopRemoteProgressTimer();
+  }
+  updateActiveCacheInfo();
+}
+
+
+function handleRemoteSessionsUpdate(payload = {}) {
+  const previousActiveKey = state.remoteActiveSessionKey;
+  const previousSelectedKey = state.remoteSelectedKey;
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const normalized = [];
+  for (const item of sessions) {
+    const entry = normalizeRemoteSession(item);
+    if (entry) normalized.push(entry);
+  }
+  normalized.sort((a, b) => {
+    const playA = Number(a?.lastPlayTs) || 0;
+    const playB = Number(b?.lastPlayTs) || 0;
+    if (playA !== playB) return playB - playA;
+    const updateA = Number(a?.lastUpdate) || 0;
+    const updateB = Number(b?.lastUpdate) || 0;
+    if (updateA !== updateB) return updateB - updateA;
+    const statusA = (a?.status || '').toLowerCase();
+    const statusB = (b?.status || '').toLowerCase();
+    if (statusA !== statusB) {
+      const rank = { playing: 2, paused: 1 };
+      const scoreA = rank[statusA] || 0;
+      const scoreB = rank[statusB] || 0;
+      if (scoreA !== scoreB) return scoreB - scoreA;
+    }
+    return a.key.localeCompare(b.key);
+  });
+  state.remoteSessions = normalized;
+  const activeKey = typeof payload.activeKey === 'string' ? payload.activeKey : '';
+  const selectedKey = typeof payload.selectedKey === 'string' ? payload.selectedKey : '';
+  state.remoteActiveSessionKey = normalized.some((session) => session.key === activeKey) ? activeKey : '';
+  state.remoteSelectedKey = normalized.some((session) => session.key === selectedKey) ? selectedKey : '';
+  if (state.useRemoteTimeline) {
+    const targetKey = state.remoteSelectedKey || state.remoteActiveSessionKey || '';
+    updateVideoCacheSelect(targetKey);
+    if (previousActiveKey !== state.remoteActiveSessionKey || previousSelectedKey !== state.remoteSelectedKey) {
+      applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
+    }
+  }
+}
+
+function applyRemoteTimeline(payload) {
+  if (!payload) return;
+  if (!dom.video) return;
+  const status = getRemotePlaybackStatus(payload);
+  dom.video.dataset.remoteStatus = status || 'unknown';
+  dom.video.classList.toggle('is-remote-playing', status === 'playing');
+  dom.video.classList.toggle('is-remote-paused', status === 'paused');
+}
+
+
+function updateRemotePlayerVisibility() {
+  const usingRemote = Boolean(state.useRemoteTimeline);
+  if (dom.previewArea) {
+    dom.previewArea.classList.toggle('remote-active', usingRemote);
+  }
+  if (dom.remoteHud) {
+    dom.remoteHud.hidden = !usingRemote;
+    dom.remoteHud.setAttribute('aria-hidden', usingRemote ? 'false' : 'true');
+  }
+  if (dom.video) {
+    dom.video.classList.toggle('remote-mock', usingRemote);
+    dom.video.style.pointerEvents = usingRemote ? 'none' : '';
+    if (usingRemote) {
+      dom.video.removeAttribute('controls');
+      dom.video.controls = false;
+      dom.video.setAttribute('data-remote-active', 'true');
+      try { dom.video.pause(); } catch { /* noop */ }
+    } else {
+      dom.video.setAttribute('controls', '');
+      dom.video.controls = true;
+      dom.video.removeAttribute('data-remote-active');
+      dom.video.removeAttribute('data-remote-status');
+      delete dom.video.dataset.remoteStatus;
+      dom.video.classList.remove('is-remote-playing', 'is-remote-paused');
+      clearRemoteCover();
+    }
+  }
+}
+
+function formatClockTime(seconds) {
+  if (!Number.isFinite(seconds)) return '--:--';
+  const clamped = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(clamped / 3600);
+  const minutes = Math.floor((clamped % 3600) / 60);
+  const secs = clamped % 60;
+  const mm = String(minutes).padStart(hours > 0 ? 2 : 1, '0');
+  const ss = String(secs).padStart(2, '0');
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function getRemotePayloadTimestamp(info = state.remoteNowPlaying) {
+  if (info && Number.isFinite(info.receivedAt)) return info.receivedAt;
+  if (info === state.remoteNowPlaying && Number.isFinite(state.remoteLastUpdate)) {
+    return state.remoteLastUpdate;
+  }
+  return 0;
+}
+
+function getRemotePlaybackStatus(info = state.remoteNowPlaying) {
+  if (!info || typeof info !== 'object') return 'unknown';
+  return normalizeRemoteStatus(info.status);
+}
+
+
+function getRemoteProgressEstimate(info = state.remoteNowPlaying) {
+  if (!info || typeof info !== 'object') {
+    return { progress: null, duration: null };
+  }
+  const progressBase = Number.isFinite(info.progressSeconds)
+    ? info.progressSeconds
+    : (Number.isFinite(info.progressMs) ? info.progressMs / 1000 : null);
+  const duration = Number.isFinite(info.durationSeconds)
+    ? Math.max(0, info.durationSeconds)
+    : (Number.isFinite(info.durationMs) ? Math.max(0, info.durationMs / 1000) : null);
+  let progress = progressBase != null ? Math.max(0, progressBase) : null;
+  const status = getRemotePlaybackStatus(info);
+  const baseTs = getRemotePayloadTimestamp(info);
+  if (progress != null && status === 'playing' && baseTs > 0) {
+    const elapsed = Math.max(0, (Date.now() - baseTs) / 1000);
+    progress += elapsed;
+  }
+  if (progress != null && duration != null && duration > 0) {
+    progress = Math.min(progress, duration);
+  }
+  return { progress, duration };
+}
+
+function updateRemoteProgressDisplay(info = state.remoteNowPlaying) {
+  if (!dom.remoteHudCurrent || !dom.remoteHudDuration || !dom.remoteHudProgressFill) return;
+  const { progress, duration } = getRemoteProgressEstimate(info);
+  const currentText = progress != null ? formatClockTime(progress) : '0:00';
+  dom.remoteHudCurrent.textContent = currentText;
+  const isLive = info?.isLive === true;
+  if (isLive) {
+    dom.remoteHudDuration.textContent = 'LIVE';
+    dom.remoteHudDuration.classList.add('is-live');
+  } else {
+    dom.remoteHudDuration.classList.remove('is-live');
+    dom.remoteHudDuration.textContent = (duration != null && duration > 0)
+      ? formatClockTime(duration)
+      : '--:--';
+  }
+  const ratio = (progress != null && duration != null && duration > 0)
+    ? Math.min(1, Math.max(0, progress / duration))
+    : 0;
+  dom.remoteHudProgressFill.style.width = `${(ratio * 100).toFixed(2)}%`;
+}
+
+function getRemoteStatusLabel(info = state.remoteNowPlaying) {
+  if (!info || typeof info !== 'object') return '等待播放';
+  const status = getRemotePlaybackStatus(info);
+  const isLive = info.isLive === true;
+  if (status === 'playing') return isLive ? '直播中' : '播放中';
+  if (status === 'paused') return isLive ? '直播暫停' : '已暫停';
+  if (status === 'unknown') return isLive ? '直播結束' : '已停止';
+  return info.title || info.artists?.length ? '已連線' : '等待播放';
+}
+
+function updateRemotePlayerUi(info = state.remoteNowPlaying) {
+  if (!dom.remoteHud) return;
+  const remote = info && typeof info === 'object' ? info : null;
+  const hasRemote = Boolean(remote);
+  const title = remote?.title || '外部時間軸';
+  const artists = Array.isArray(remote?.artists) && remote.artists.length
+    ? remote.artists.join(', ')
+    : '';
+  const platform = remote?.platform ? `@${remote.platform}` : '';
+  const subtitleParts = [artists, platform].filter(Boolean);
+  if (dom.remoteHudTitle) dom.remoteHudTitle.textContent = title;
+  if (dom.remoteHudSubtitle) {
+    dom.remoteHudSubtitle.textContent = subtitleParts.length
+      ? subtitleParts.join(' · ')
+      : (hasRemote ? '外部時間軸已啟用' : '等待外部播放資訊...');
+  }
+  if (dom.remoteHudStatus) dom.remoteHudStatus.textContent = getRemoteStatusLabel(remote);
+
+  if (state.useRemoteTimeline) {
+    applyRemoteCoverImage(remote?.cover || '');
+  }
+
+  const status = getRemotePlaybackStatus(remote);
+  dom.remoteHud.classList.toggle('is-playing', status === 'playing');
+  dom.remoteHud.classList.toggle('is-paused', status === 'paused');
+  dom.remoteHud.classList.toggle('is-stopped', !status || status === 'unknown');
+
+  updateRemoteProgressDisplay(remote);
+}
+
+function startRemoteProgressTimer() {
+  updateRemoteProgressDisplay();
+  if (state.remoteProgressTimer != null) return;
+  state.remoteProgressTimer = window.setInterval(() => {
+    if (!state.useRemoteTimeline) {
+      stopRemoteProgressTimer();
+      return;
+    }
+    updateRemoteProgressDisplay();
+    if (getRemotePlaybackStatus() !== 'playing') {
+      if (state.useRemoteTimeline && state.remoteNowPlaying) {
+        applyRemoteTimeline(state.remoteNowPlaying);
+      }
+      updateRemotePlayerUi();
+      stopRemoteProgressTimer();
+    }
+  }, 500);
+}
+
+function stopRemoteProgressTimer() {
+  if (state.remoteProgressTimer != null) {
+    window.clearInterval(state.remoteProgressTimer);
+    state.remoteProgressTimer = null;
+  }
+}
+
+function revokeRemoteCoverObjectUrl() {
+  if (state.remoteCoverObjectUrl) {
+    try { URL.revokeObjectURL(state.remoteCoverObjectUrl); } catch { /* noop */ }
+    state.remoteCoverObjectUrl = '';
+  }
+}
+
+function clearRemoteCover() {
+  if (!dom.video) return;
+  if (state.remoteCoverAbort) {
+    try { state.remoteCoverAbort.abort(); } catch { /* noop */ }
+    state.remoteCoverAbort = null;
+  }
+  state.remoteCoverToken += 1;
+  revokeRemoteCoverObjectUrl();
+  state.remoteCoverSource = '';
+  dom.video.removeAttribute('data-remote-cover');
+  if (dom.video.hasAttribute('poster')) {
+    dom.video.removeAttribute('poster');
+  }
+}
+
+async function applyRemoteCoverImage(rawUrl) {
+  const video = dom.video;
+  if (!video) return;
+  const url = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+  if (!url) {
+    clearRemoteCover();
+    return;
+  }
+  if (state.remoteCoverSource === url) return;
+  state.remoteCoverSource = url;
+  state.remoteCoverToken += 1;
+  const token = state.remoteCoverToken;
+  if (state.remoteCoverAbort) {
+    try { state.remoteCoverAbort.abort(); } catch { /* noop */ }
+  }
+  const controller = new AbortController();
+  state.remoteCoverAbort = controller;
+  try {
+    const response = await fetch(url, {
+      mode: 'cors',
+      credentials: 'omit',
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    if (!/^image\//i.test(blob.type || '')) throw new Error('非圖片資源');
+    const objectUrl = URL.createObjectURL(blob);
+    if (state.remoteCoverToken !== token) {
+      try { URL.revokeObjectURL(objectUrl); } catch { /* noop */ }
+      return;
+    }
+    revokeRemoteCoverObjectUrl();
+    state.remoteCoverObjectUrl = objectUrl;
+    video.setAttribute('data-remote-cover', 'object');
+    video.poster = objectUrl;
+  } catch (err) {
+    if (state.remoteCoverToken !== token) return;
+    console.warn('[remote] 無法透過 fetch 載入封面，改用原網址', err);
+    revokeRemoteCoverObjectUrl();
+    video.setAttribute('data-remote-cover', 'direct');
+    video.poster = url;
+  } finally {
+    if (state.remoteCoverToken === token) {
+      state.remoteCoverAbort = null;
+    }
+  }
+}
+
+
+function updateRemoteToggleUI() {
+  if (!dom.useRemoteTimelineToggle) return;
+  dom.useRemoteTimelineToggle.checked = Boolean(state.useRemoteTimeline);
+  dom.useRemoteTimelineToggle.setAttribute('aria-checked', state.useRemoteTimeline ? 'true' : 'false');
+}
+
+function applyRemoteMediaUiState() {
+  const usingRemote = Boolean(state.useRemoteTimeline);
+  if (dom.videoCacheSearch) {
+    const input = dom.videoCacheSearch;
+    input.disabled = false;
+    input.classList.toggle('is-remote-disabled', usingRemote);
+    if (!input.dataset.placeholderVideo) {
+      input.dataset.placeholderVideo = input.placeholder || '';
+    }
+    if (!input.dataset.placeholderRemote) {
+      input.dataset.placeholderRemote = '搜尋外部播放來源...';
+    }
+    input.placeholder = usingRemote
+      ? input.dataset.placeholderRemote
+      : (input.dataset.placeholderVideo || '');
+  }
+  if (dom.pickVideo) {
+    dom.pickVideo.disabled = usingRemote;
+    dom.pickVideo.classList.toggle('is-remote-disabled', usingRemote);
+  }
+  const select = dom.videoCacheSelect;
+  if (!select) return;
+  select.classList.toggle('is-remote-disabled', usingRemote);
+}
+
+function setRemoteTimelineEnabled(enabled, { persist = false } = {}) {
+  const enablingRemote = Boolean(enabled);
+  state.useRemoteTimeline = enablingRemote;
+  state.remoteMediaKey = enablingRemote ? (getRemoteMediaKey() || state.remoteMediaKey || '') : '';
+  updateRemoteToggleUI();
+  overlaySync.connect(getCurrentPort());
+  if (state.useRemoteTimeline) {
+    overlaySync.stop();
+    if (state.activeVideoId) {
+      state.activeVideoId = '';
+      loadVideoEntry(null);
+    }
+    if (state.remoteNowPlaying) applyRemoteTimeline(state.remoteNowPlaying);
+  } else {
+    overlaySync.start();
+  }
+  if (persist) {
+    persistPlayerConfig();
+  }
+  updateActiveCacheInfo();
+  applyRemoteMediaUiState();
+  updateRemotePlayerVisibility();
+  if (state.useRemoteTimeline) {
+    updateRemotePlayerUi();
+    if (getRemotePlaybackStatus() === 'playing') {
+      startRemoteProgressTimer();
+    } else {
+      stopRemoteProgressTimer();
+    }
+  } else {
+    stopRemoteProgressTimer();
+    updateRemotePlayerUi();
+  }
+  if (state.useRemoteTimeline) {
+    updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+  } else {
+    updateVideoCacheSelect(state.activeVideoId);
+  }
+  const canApplyOffset = state.activeSubsId && (!state.useRemoteTimeline || state.remoteMediaKey);
+  if (canApplyOffset) {
+    applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
+  }
+}
+
+function handleRemoteTimelineToggle(event) {
+  const next = event?.target?.checked === true;
+  setRemoteTimelineEnabled(next, { persist: true });
+}
 function setVideoPlaceholder(active) {
   if (!dom.video) return;
   dom.video.classList.toggle('placeholder', Boolean(active));
@@ -354,8 +1620,43 @@ function offsetsEqual(a, b) {
   return modeA === modeB && Math.abs(secondsA - secondsB) <= OFFSET_EPSILON;
 }
 
+function getRemoteMediaKey(remote = state.remoteNowPlaying) {
+  if (!state.useRemoteTimeline) return '';
+  if (!remote || typeof remote !== 'object') return '';
+  const guid = sanitizeRemoteIdentity(remote.guid);
+  const link = normalizeRemoteUrl(remote.songLink);
+  if (guid && link) return `remote:guid:${guid}|song:${link}`;
+  if (link) return `remote:song:${link}`;
+  if (guid) return `remote:guid:${guid}`;
+  const platform = typeof remote.platform === 'string' ? remote.platform.trim().toLowerCase() : '';
+  const title = typeof remote.title === 'string' ? remote.title.trim() : '';
+  let secondary = title;
+  if (!secondary && Array.isArray(remote.artists)) {
+    secondary = remote.artists.map((name) => (typeof name === 'string' ? name.trim() : '')).filter(Boolean).join(', ');
+  }
+  const base = [platform, secondary].filter(Boolean).join(':');
+  return base ? `remote:title:${base}` : '';
+}
+
+function resolveMediaKey(videoId = state.activeVideoId) {
+  if (videoId) return videoId;
+  if (!state.useRemoteTimeline) return '';
+  if (state.remoteMediaKey) return state.remoteMediaKey;
+  const remoteKey = getRemoteMediaKey();
+  if (remoteKey) {
+    state.remoteMediaKey = remoteKey;
+    return remoteKey;
+  }
+  return '';
+}
+
+function buildSubtitleOffsetKey(mediaKey, subsId) {
+  return [mediaKey || '', subsId || ''].join('::');
+}
+
 function makeSubtitleOffsetKey(videoId = state.activeVideoId, subsId = state.activeSubsId) {
-  return [videoId || '', subsId || ''].join('::');
+  const mediaKey = resolveMediaKey(videoId);
+  return buildSubtitleOffsetKey(mediaKey, subsId);
 }
 
 function normalizeSubtitleOffsetOverrides(raw, defaults = state.subtitleOffsetDefaults) {
@@ -383,11 +1684,12 @@ function resolveSubtitleOffset({ videoId = state.activeVideoId, subsId = state.a
     seconds: sanitizeSubtitleOffsetSeconds(state.subtitleOffsetDefaults?.seconds)
   };
   const overrides = state.subtitleOffsetOverrides || {};
+  const mediaKey = resolveMediaKey(videoId);
   const candidates = [];
-  const fullKey = makeSubtitleOffsetKey(videoId, subsId);
+  const fullKey = buildSubtitleOffsetKey(mediaKey, subsId);
   if (fullKey && fullKey !== '::') candidates.push(fullKey);
-  if (videoId) candidates.push([videoId, ''].join('::'));
-  if (subsId) candidates.push(['', subsId].join('::'));
+  if (mediaKey) candidates.push(buildSubtitleOffsetKey(mediaKey, ''));
+  if (subsId) candidates.push(buildSubtitleOffsetKey('', subsId));
   const seen = new Set();
   for (const key of candidates) {
     if (!key || seen.has(key)) continue;
@@ -404,11 +1706,12 @@ function resolveSubtitleOffset({ videoId = state.activeVideoId, subsId = state.a
 }
 
 function applySubtitleOffsetForSelection({ videoId = state.activeVideoId, subsId = state.activeSubsId, notify = true } = {}) {
-  const hasCompleteSelection = Boolean(videoId) && Boolean(subsId);
+  const mediaKey = resolveMediaKey(videoId);
+  const hasCompleteSelection = Boolean(mediaKey) && Boolean(subsId);
   setSubtitleOffsetControlsEnabled(hasCompleteSelection);
   const prevMode = state.subtitleOffsetMode;
   const prevSeconds = state.subtitleOffsetSeconds;
-  const resolved = resolveSubtitleOffset({ videoId, subsId });
+  const resolved = resolveSubtitleOffset({ videoId: mediaKey, subsId });
   setSubtitleOffsetState(resolved);
   const modeChanged = resolved.mode !== prevMode;
   const secondsChanged = Math.abs(resolved.seconds - prevSeconds) > OFFSET_EPSILON;
@@ -502,8 +1805,10 @@ async function loadInitialConfig() {
   if (output.maxHeight != null) dom.maxHeight.value = String(output.maxHeight);
   if (dom.align) {
     dom.align.value = normalizeAlignValue(output.align ?? dom.align.value);
+    refreshCustomSelect(dom.align);
   }
   if (output.background) dom.background.value = output.background;
+  refreshCustomSelect(dom.background);
   const defaultModeRaw = output?.subtitleOffsetDefaults?.mode ?? output.subtitleOffsetMode;
   const defaultSecondsRaw = output?.subtitleOffsetDefaults?.seconds ?? output.subtitleOffsetSeconds;
   state.subtitleOffsetDefaults = {
@@ -512,7 +1817,10 @@ async function loadInitialConfig() {
   };
   state.subtitleOffsetOverrides = normalizeSubtitleOffsetOverrides(output?.subtitleOffsetOverrides, state.subtitleOffsetDefaults);
   setSubtitleOffsetState(state.subtitleOffsetDefaults);
-  setSubtitleOffsetControlsEnabled(Boolean(state.activeVideoId) && Boolean(state.activeSubsId));
+  const hasMediaForOffset = Boolean(resolveMediaKey(state.activeVideoId));
+  setSubtitleOffsetControlsEnabled(hasMediaForOffset && Boolean(state.activeSubsId));
+  const remoteTimelineEnabled = cfg?.player?.useRemoteTimeline === true;
+  setRemoteTimelineEnabled(remoteTimelineEnabled, { persist: false });
   const storedVolume = cfg?.player?.volume;
   const initialVolume = clampVolume(storedVolume != null ? storedVolume : dom.video?.volume ?? 1);
   state.playerVolume = initialVolume;
@@ -632,6 +1940,7 @@ function setupEventHandlers() {
   dom.clearCookies?.addEventListener('click', handleClearCookies);
   dom.checkBins?.addEventListener('click', handleCheckBins);
   dom.pickVideo?.addEventListener('click', handlePickVideo);
+  dom.useRemoteTimelineToggle?.addEventListener('change', handleRemoteTimelineToggle);
   dom.pickSubs?.addEventListener('click', handlePickSubs);
   dom.pickFonts?.addEventListener('click', handlePickFonts);
   dom.clearFonts?.addEventListener('click', handleClearFonts);
@@ -1201,7 +2510,9 @@ async function handleDownloadDone(payload) {
     const merged = upsertCacheEntry(entry);
     let activeVideoEntry = getEntryById(state.activeVideoId);
     let activeSubsEntry = getEntryById(state.activeSubsId);
-    if (merged?.hasVideo && merged.videoFilename) {
+    if (state.useRemoteTimeline) {
+      updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+    } else if (merged?.hasVideo && merged.videoFilename) {
       state.activeVideoId = merged.id;
       updateVideoCacheSelect(merged.id);
       await loadVideoEntry(merged);
@@ -1289,16 +2600,29 @@ function formatSubtitleOptionLabel(entry) {
   return `${base}（${markers.join(' / ')}）`;
 }
 
-function updateVideoCacheSelect(selectedId = state.activeVideoId) {
+function updateVideoCacheSelect(selectedId) {
   const select = dom.videoCacheSelect;
   if (!select) return;
+  applyRemoteMediaUiState();
+  if (state.useRemoteTimeline) {
+    const searchTerm = (state.videoSearch || '').toLowerCase();
+    const targetKey = typeof selectedId === 'string'
+      ? selectedId
+      : (state.remoteSelectedKey || state.remoteActiveSessionKey || '');
+    populateRemoteSessionSelect(select, {
+      selectedKey: targetKey,
+      searchTerm
+    });
+    return;
+  }
+  const effectiveSelectedId = typeof selectedId === 'string' ? selectedId : state.activeVideoId;
   const searchTerm = (state.videoSearch || '').toLowerCase();
   const entries = state.cachedEntries
     .filter((entry) => entry?.hasVideo && entry.videoFilename && matchesEntrySearch(entry, searchTerm));
   populateSelect(select, entries, {
-    selectedId,
+    selectedId: effectiveSelectedId,
     placeholder: '選擇影片或音訊',
-    emptyLabel: state.videoSearch ? '（沒有符合的媒體）' : '（尚無快取媒體）',
+    emptyLabel: state.videoSearch ? '（沒有符合的媒體）' : '（尚未匯入媒體）',
     buildLabel: formatVideoOptionLabel,
     buildTitle: (entry) => entry.videoPath || entry.videoFilename || ''
   });
@@ -1333,6 +2657,7 @@ function populateSelect(select, entries, {
     option.disabled = true;
     select.add(option);
     select.disabled = true;
+    refreshCustomSelect(select, { rebuildOptions: true });
     return;
   }
   select.disabled = false;
@@ -1348,11 +2673,134 @@ function populateSelect(select, entries, {
   } else {
     select.value = '';
   }
+  refreshCustomSelect(select, { rebuildOptions: true });
+}
+
+function normalizeRemoteSession(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const key = typeof raw.key === 'string' ? raw.key.trim() : '';
+  if (!key) return null;
+  const host = typeof raw.host === 'string' ? raw.host : '';
+  const status = normalizeRemoteStatus(raw.status);
+  const lastUpdateRaw = Number(raw.lastUpdate);
+  const lastUpdate = Number.isFinite(lastUpdateRaw) ? lastUpdateRaw : 0;
+  const lastPlayTsRaw = Number(raw.lastPlayTs);
+  const lastPlayTs = Number.isFinite(lastPlayTsRaw) ? lastPlayTsRaw : 0;
+  const connected = raw.connected !== false;
+  let nowPlaying = null;
+  if (raw.nowPlaying && typeof raw.nowPlaying === 'object') {
+    const artists = Array.isArray(raw.nowPlaying.artists)
+      ? raw.nowPlaying.artists.map((name) => (typeof name === 'string' ? name.trim() : '')).filter(Boolean)
+      : [];
+    nowPlaying = {
+      title: typeof raw.nowPlaying.title === 'string' ? raw.nowPlaying.title : '',
+      artists,
+      status: normalizeRemoteStatus(raw.nowPlaying.status || status),
+      songLink: typeof raw.nowPlaying.songLink === 'string' ? raw.nowPlaying.songLink : '',
+      platform: typeof raw.nowPlaying.platform === 'string' ? raw.nowPlaying.platform : '',
+      isLive: raw.nowPlaying.isLive === true
+    };
+  }
+  const resolvedStatus = normalizeRemoteStatus(nowPlaying?.status || status || 'unknown');
+  if (resolvedStatus === 'unknown') return null;
+  const searchParts = [key, host];
+  if (nowPlaying) {
+    if (nowPlaying.title) searchParts.push(nowPlaying.title);
+    if (nowPlaying.artists.length) searchParts.push(nowPlaying.artists.join(' '));
+    if (nowPlaying.platform) searchParts.push(nowPlaying.platform);
+    if (nowPlaying.songLink) searchParts.push(nowPlaying.songLink);
+  }
+  const searchText = searchParts
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+  return { key, host, status: resolvedStatus || 'unknown', lastUpdate, lastPlayTs, connected, nowPlaying, searchText };
+}
+
+function matchesRemoteSessionSearch(session, term) {
+  if (!term) return true;
+  return (session?.searchText || '').includes(term);
+}
+
+function formatRemoteSessionOptionLabel(session) {
+  if (!session) return '';
+  const nowPlaying = session.nowPlaying || null;
+  const host = session.host || '';
+  const title = nowPlaying?.title || '';
+  const artists = Array.isArray(nowPlaying?.artists) && nowPlaying.artists.length
+    ? nowPlaying.artists.join(', ')
+    : '';
+  const platform = nowPlaying?.platform || '';
+  const statusSource = nowPlaying?.status || session.status;
+  const parts = [];
+  if (host) parts.push(host);
+  if (title) parts.push(title);
+  else if (artists) parts.push(artists);
+  let label = parts.length ? parts.join(' · ') : (platform || session.key);
+  const statusLabel = getRemoteStatusLabel({
+    status: statusSource,
+    isLive: nowPlaying?.isLive,
+    title: nowPlaying?.title,
+    artists: nowPlaying?.artists
+  });
+  if (statusLabel) {
+    label += `（${statusLabel}）`;
+  }
+  return label;
+}
+
+function populateRemoteSessionSelect(select, { selectedKey = '', searchTerm = '' } = {}) {
+  const normalizedTerm = typeof searchTerm === 'string' ? searchTerm : '';
+  const sessions = state.remoteSessions.filter((session) => matchesRemoteSessionSearch(session, normalizedTerm));
+  select.innerHTML = '';
+  if (!sessions.length) {
+    const emptyLabel = state.remoteSessions.length
+      ? '（沒有符合的外部來源）'
+      : '（沒有外部播放來源）';
+    const option = new Option(emptyLabel, '');
+    option.disabled = true;
+    option.selected = true;
+    select.add(option);
+    select.disabled = true;
+    refreshCustomSelect(select, { rebuildOptions: true });
+    return;
+  }
+  select.disabled = false;
+  const placeholder = new Option('選擇要追蹤的頁面', '', !selectedKey, !selectedKey);
+  select.add(placeholder);
+  sessions.forEach((session) => {
+    const option = new Option(formatRemoteSessionOptionLabel(session), session.key, false, session.key === selectedKey);
+    const tooltipParts = [];
+    if (session.nowPlaying?.artists?.length) tooltipParts.push(session.nowPlaying.artists.join(', '));
+    if (session.nowPlaying?.platform) tooltipParts.push(session.nowPlaying.platform);
+    if (session.host && session.host !== session.nowPlaying?.platform) tooltipParts.push(session.host);
+    if (session.nowPlaying?.songLink) {
+      option.title = session.nowPlaying.songLink;
+    } else if (tooltipParts.length) {
+      option.title = tooltipParts.join(' · ');
+    }
+    select.add(option);
+  });
+  let finalValue = selectedKey;
+  if (!sessions.some((session) => session.key === finalValue)) {
+    const fallback = state.remoteActiveSessionKey;
+    if (fallback && sessions.some((session) => session.key === fallback)) {
+      finalValue = fallback;
+    } else {
+      finalValue = '';
+    }
+  }
+  select.value = finalValue;
+  refreshCustomSelect(select, { rebuildOptions: true });
 }
 
 function handleVideoCacheSearch() {
   state.videoSearch = (dom.videoCacheSearch?.value || '').trim();
-  updateVideoCacheSelect(state.activeVideoId);
+  if (state.useRemoteTimeline) {
+    updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+  } else {
+    updateVideoCacheSelect(state.activeVideoId);
+  }
 }
 
 function handleSubsCacheSearch() {
@@ -1367,6 +2815,13 @@ function getEntryById(id) {
 
 function handleVideoCacheSelectChange() {
   const id = dom.videoCacheSelect?.value || '';
+  if (state.useRemoteTimeline) {
+    state.remoteSelectedKey = id;
+    overlaySync.setActiveSessionKey(id);
+    refreshCustomSelect(dom.videoCacheSelect);
+    applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
+    return;
+  }
   state.activeVideoId = id;
   const entry = getEntryById(id);
   loadVideoEntry(entry);
@@ -1421,11 +2876,26 @@ async function loadSubtitleEntry(entry) {
   }
 }
 
+function describeRemoteNowPlaying(info) {
+  const target = info || state.remoteNowPlaying;
+  if (!target) return '';
+  const pieces = [];
+  if (target.title) pieces.push(target.title);
+  if (Array.isArray(target.artists) && target.artists.length) pieces.push(target.artists.join(', '));
+  if (target.platform) pieces.push(`@${target.platform}`);
+  return pieces.join(' / ');
+}
+
 function updateActiveCacheInfo({ video = getEntryById(state.activeVideoId), subs = getEntryById(state.activeSubsId) } = {}) {
   if (!dom.activeCacheInfo) return;
   const videoLabel = video ? describeVideoEntry(video) : '（未選擇）';
   const subsLabel = subs ? describeSubtitleEntry(subs) : '（未選擇）';
-  dom.activeCacheInfo.textContent = `影片/音訊：${videoLabel}\n字幕：${subsLabel}`;
+  let infoText = '影片/音訊：' + videoLabel + '\n字幕：' + subsLabel;
+  if (state.useRemoteTimeline && state.remoteNowPlaying) {
+    const remoteLabel = describeRemoteNowPlaying(state.remoteNowPlaying);
+    if (remoteLabel) infoText += '\n外部時間軸：' + remoteLabel;
+  }
+  dom.activeCacheInfo.textContent = infoText;
 }
 
 /* ---------------- 字幕處理 ---------------- */
@@ -1686,7 +3156,9 @@ async function handleLocalFileSelected(ev) {
 
   if (entry) {
     const merged = upsertCacheEntry(entry);
-    if (merged?.hasVideo && merged.videoFilename) {
+    if (state.useRemoteTimeline) {
+      updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+    } else if (merged?.hasVideo && merged.videoFilename) {
       state.activeVideoId = merged.id;
       updateVideoCacheSelect(merged.id);
       await loadVideoEntry(merged);
@@ -1747,7 +3219,12 @@ function releaseObjectUrl() {
 
 function syncOverlayConnection() {
   overlaySync.connect(getCurrentPort());
-  overlaySync.start();
+  if (state.useRemoteTimeline) {
+    overlaySync.stop();
+    if (state.remoteNowPlaying) applyRemoteTimeline(state.remoteNowPlaying);
+  } else {
+    overlaySync.start();
+  }
 }
 
 function clampVolume(value) {
@@ -1831,6 +3308,7 @@ function createCacheSelector(rowEl, { label, searchPlaceholder, hint } = {}) {
   container.appendChild(searchInput);
   const select = document.createElement('select');
   select.style.minWidth = '260px';
+  select.dataset.customSelectPlacement = 'dropup';
   select.disabled = true;
   container.appendChild(select);
   if (hint) {
@@ -1887,4 +3365,12 @@ async function buildFilePayload(file) {
     return null;
   }
 }
+
+window.addEventListener('beforeunload', () => {
+  if (state.remoteCoverAbort) {
+    try { state.remoteCoverAbort.abort(); } catch { /* noop */ }
+    state.remoteCoverAbort = null;
+  }
+  revokeRemoteCoverObjectUrl();
+});
 

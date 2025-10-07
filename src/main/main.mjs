@@ -6,6 +6,8 @@ import { setupIpc } from './ipc.mjs';
 import { checkAndOfferDownload, updateYtDlpIfAvailable } from './binManager.mjs';
 import { getConfig } from './config.mjs';
 import { OverlayServer } from './overlayServer.mjs';
+import { updateElectronApp } from 'update-electron-app';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +16,10 @@ const SRC_DIR = path.join(PROJECT_ROOT, 'src');               // <repo>/src
 const RENDERER_DIR = path.join(SRC_DIR, 'renderer');               // <repo>/src/renderer
 const PRELOAD_PATH = path.join(SRC_DIR, 'preload.cjs');             // <repo>/src/preload.mjs
 const ASSETS_DIR = path.join(PROJECT_ROOT, 'assets');            // <repo>/assets
+
+updateElectronApp({
+  updateInterval: '10 minutes', // 可調；預設即為 10 分鐘
+});
 
 const DEFAULT_OVERLAY_PORT = 59837;
 

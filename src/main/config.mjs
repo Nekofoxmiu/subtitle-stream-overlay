@@ -23,7 +23,8 @@ export const store = new Store({
       defaultFontFamily: 'NotoSans-Regular'
     },
     player: {
-      volume: 0.8
+      volume: 0.8,
+      useRemoteTimeline: false
     },
     // 新增：cookies 路徑（Netscape cookies.txt）
     cookiesPath: '',
