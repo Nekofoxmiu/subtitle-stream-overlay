@@ -28,9 +28,9 @@ module.exports = {
     {
       name: '@electron-forge/publisher-github',
       config: {
-        repository: { owner: 'Nekofoxmiu', name: 'https://github.com/Nekofoxmiu/subtitle-stream-overlay' },
+        repository: { owner: 'Nekofoxmiu', name: 'subtitle-stream-overlay' },
         prerelease: false,
-        draft: false
+        draft: true
       }
     }
   ],
