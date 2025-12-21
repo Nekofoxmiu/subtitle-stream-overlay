@@ -1,0 +1,139 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OBS Bootstrapper (no-UI)</title>
+<style>
+  :root { --bg: transparent; }
+  html, body { height:100%; margin:0; background:var(--bg); }
+  /* 直到成功前不渲染任何可見元素 */
+</style>
+
+<body><script>
+  const CONFIG = {
+    targetHttp : "http://127.0.0.1:59839/overlay",
+    wsUrl      : "ws://127.0.0.1:59839/ws",
+    retry: { initialMs: 1000, maxMs: 2000, factor: 1.6, jitter: 0.25 },
+    heartbeat: { intervalMs: 4000, timeoutMs: 9000 } // 心跳間隔/超時
+  };
+  
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  function backoffGen(cfg){
+    let cur = cfg.initialMs;
+    return () => {
+      const j = 1 + (Math.random()*2 - 1) * cfg.jitter;
+      const val = Math.min(cur * j, cfg.maxMs);
+      cur = Math.min(cur * cfg.factor, cfg.maxMs);
+      return Math.max(250, Math.floor(val));
+    };
+  }
+  
+  let monitorWS = null;
+  let iframeEl  = null;
+  let hbTimer   = null;
+  let hbDeadline = 0;
+  
+  function startHeartbeat(){
+    stopHeartbeat();
+    const { intervalMs, timeoutMs } = CONFIG.heartbeat;
+    const tick = async () => {
+      // 若超過期限仍無任何事件，視為斷線
+      if (Date.now() > hbDeadline) {
+        teardown();
+        return;
+      }
+      // 嘗試送心跳字串；若伺服端不回也沒關係，onclose 會接手
+      try { monitorWS?.readyState === WebSocket.OPEN && monitorWS.send('ping'); } catch {}
+    };
+    hbDeadline = Date.now() + timeoutMs;
+    hbTimer = setInterval(tick, intervalMs);
+  }
+  
+  function stopHeartbeat(){
+    if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
+  }
+  
+  function attachIframe(){
+    if (iframeEl) return;
+    const ifr = document.createElement('iframe');
+    ifr.setAttribute('referrerpolicy', 'no-referrer');
+    Object.assign(ifr.style, { position:'fixed', inset:'0', width:'100%', height:'100%', border:'0' });
+    ifr.src = CONFIG.targetHttp;
+    document.body.appendChild(ifr);
+    iframeEl = ifr;
+  }
+  
+  function teardown(){
+    stopHeartbeat();
+    try {
+      if (iframeEl) {
+        // 先清空再移除，避免 OBS 保留最後一幀
+        iframeEl.src = 'about:blank';
+        // 讓 about:blank 有機會渲染一幀
+        setTimeout(() => { try { iframeEl.remove(); } catch {} iframeEl = null; }, 0);
+      }
+    } catch {}
+    try { monitorWS && monitorWS.close(); } catch {}
+    monitorWS = null;
+  }
+  
+  function openMonitorWS(){
+    return new Promise(resolve => {
+      try {
+        const ws = new WebSocket(CONFIG.wsUrl);
+        let opened = false;
+  
+        ws.onopen = () => {
+          opened = true;
+          monitorWS = ws;
+          // 任一事件代表活性，刷新心跳期限
+          const bump = () => { hbDeadline = Date.now() + CONFIG.heartbeat.timeoutMs; };
+          ws.onmessage = bump;
+          ws.onerror   = () => { teardown(); };
+          ws.onclose   = () => { teardown(); };
+          startHeartbeat();
+          resolve(true);
+        };
+  
+        // 若 2 秒內打不開，視為失敗
+        const t = setTimeout(() => {
+          if (!opened) {
+            try { ws.close(); } catch {}
+            resolve(false);
+          }
+        }, 2000);
+        // 保險：開啟即清除守門
+        ws.addEventListener('open', () => clearTimeout(t), { once:true });
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+  
+  (async function main(){
+    const next = backoffGen(CONFIG.retry);
+    while (true) {
+      // 嘗試建立監測連線
+      const ok = await openMonitorWS();
+      if (ok) {
+        // 僅在成功後顯示 overlay
+        attachIframe();
+        // 監測連線失敗會在 onclose/onerror 中 teardown 並回到這個迴圈
+        // 等待連線終止再進入重試：以 Promise 方式掛起
+        await new Promise(r => {
+          const chk = setInterval(() => {
+            if (!monitorWS || monitorWS.readyState !== WebSocket.OPEN) {
+              clearInterval(chk);
+              r();
+            }
+          }, 300);
+        });
+      }
+      // 斷線後重試回連（零 UI，期間保持透明）
+      await sleep(next());
+    }
+  })();
+  </script>
+  

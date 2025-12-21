@@ -329,6 +329,11 @@ export class OverlayServer {
 
     this.app = express();
     this.server = http.createServer(this.app);
+    this.activeSockets = new Set();
+    this.server.on('connection', (socket) => {
+      this.activeSockets.add(socket);
+      socket.on('close', () => this.activeSockets.delete(socket));
+    });
     this.server.on('error', (err) => {
       if (!this.server.listening) return;
       console.error('[overlayServer] server error', err);
@@ -1005,11 +1010,23 @@ export class OverlayServer {
     return new Promise((resolve) => {
       try {
         if (this.wss) {
+          if (this.wss.clients && this.wss.clients.size) {
+            for (const client of this.wss.clients) {
+              try { client.close(1001, 'server restart'); } catch { /* noop */ }
+              try { client.terminate(); } catch { /* noop */ }
+            }
+          }
           try { this.wss.close(); } catch (err) { /* swallow */ }
         }
       } catch (err) { /* noop */ }
       try {
         if (this.server && this.server.close) {
+          if (this.activeSockets && this.activeSockets.size) {
+            for (const socket of this.activeSockets) {
+              try { socket.destroy(); } catch { /* noop */ }
+            }
+            this.activeSockets.clear();
+          }
           this.server.close(() => resolve());
           // In case of error during close, resolve anyway after a short timeout
           this.server.on('error', () => setTimeout(resolve, 10));

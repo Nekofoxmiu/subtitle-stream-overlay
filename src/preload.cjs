@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('api', {
   fetchSubsFromYt: (payload) => ipcRenderer.invoke('ytdlp:fetchSubs', payload),
   convertToAss: (payload) => ipcRenderer.invoke('subs:convertToAss', payload),
   notifyOverlay: (patch) => ipcRenderer.send('overlay:update', patch),
+  waitForOverlayReady: (payload) => ipcRenderer.invoke('overlay:waitReady', payload),
   readTextFile: (filePath) => ipcRenderer.invoke('file:readText', filePath),
   readBinaryBase64: (filePath) => ipcRenderer.invoke('file:readBinaryBase64', filePath),
   listCacheEntries: () => ipcRenderer.invoke('cache:list'),

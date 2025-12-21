@@ -5,7 +5,7 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import { checkAndOfferDownload, getBinPaths } from './binManager.mjs';
 import { getConfig, setConfig, store } from './config.mjs';
-import { updateOverlayState } from './main.mjs';
+import { updateOverlayState, waitForOverlayServerReady } from './main.mjs';
 
 let dlSeq = 0;
 const running = new Map(); // jobId -> child
@@ -897,6 +897,12 @@ export function setupIpc(mainWindow) {
     // Notify other main-process modules that config has changed.
     try { app.emit('config:changed', getConfig()); } catch (err) { /* noop */ }
     return getConfig();
+  });
+
+  ipcMain.handle('overlay:waitReady', async (_e, payload = {}) => {
+    const args = (payload && typeof payload === 'object') ? payload : { port: payload };
+    const { port, timeoutMs, intervalMs } = args;
+    return await waitForOverlayServerReady(port, { timeoutMs, intervalMs });
   });
 
   ipcMain.handle('dialog:openFiles', async (_e, options) => {
