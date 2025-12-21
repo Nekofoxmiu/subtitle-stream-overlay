@@ -33,6 +33,60 @@ function initializeCacheControls() {
   dom.subsCacheSearch = subsCacheControls?.search || null;
 }
 
+const OVERLAY_READY_TIMEOUT_MS = 8000;
+const OVERLAY_READY_INTERVAL_MS = 200;
+const OVERLAY_READY_RETRY_DELAY_MS = 400;
+let portChangeToken = 0;
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForOverlayServerReady(port, {
+  timeoutMs = OVERLAY_READY_TIMEOUT_MS,
+  intervalMs = OVERLAY_READY_INTERVAL_MS
+} = {}) {
+  const normalizedTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : OVERLAY_READY_TIMEOUT_MS;
+  const normalizedInterval = Number.isFinite(intervalMs) && intervalMs > 0
+    ? intervalMs
+    : OVERLAY_READY_INTERVAL_MS;
+  if (window?.api?.waitForOverlayReady) {
+    try {
+      return await window.api.waitForOverlayReady({
+        port,
+        timeoutMs: normalizedTimeout,
+        intervalMs: normalizedInterval
+      });
+    } catch {
+      // fall back to direct polling
+    }
+  }
+  const normalizedPort = Number.parseInt(port, 10);
+  if (!Number.isInteger(normalizedPort) || normalizedPort <= 0) return false;
+  const url = `http://localhost:${normalizedPort}/state`;
+  const deadline = Date.now() + normalizedTimeout;
+  while (Date.now() < deadline) {
+    try {
+      await fetch(url, { method: 'GET', cache: 'no-store', mode: 'no-cors' });
+      return true;
+    } catch {
+      // retry until timeout
+    }
+    await wait(normalizedInterval);
+  }
+  return false;
+}
+
+async function waitForOverlayServerReadyUntil(port, changeToken) {
+  while (changeToken === portChangeToken) {
+    const ready = await waitForOverlayServerReady(port);
+    if (changeToken !== portChangeToken) return false;
+    if (ready) return true;
+    await wait(OVERLAY_READY_RETRY_DELAY_MS);
+  }
+  return false;
+}
+
 class OverlaySync {
   constructor(videoEl) {
     this.ws = null;
@@ -52,16 +106,45 @@ class OverlaySync {
     this.handleWsError = this.handleWsError.bind(this);
     this.handleWsMessage = this.handleWsMessage.bind(this);
   }
+  clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+  scheduleReconnect() {
+    if (!this.allowReconnect) return;
+    if (this.reconnectTimer) return;
+    const targetPort = this.port;
+    if (!Number.isInteger(targetPort) || targetPort <= 0) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.allowReconnect) return;
+      this.connect(targetPort);
+    }, this.reconnectDelay);
+  }
   setNowPlayingHandler(handler) {
     this.nowPlayingHandler = typeof handler === 'function' ? handler : null;
   }
   setRemoteSessionsHandler(handler) {
     this.remoteSessionsHandler = typeof handler === 'function' ? handler : null;
   }
+  preparePortSwitch(port) {
+    const parsed = Number.parseInt(port, 10);
+    const targetPort = Number.isFinite(parsed) && parsed > 0 ? parsed : this.port;
+    this.clearReconnectTimer();
+    this.port = targetPort;
+    if (this.ws) {
+      this.detachWs(this.ws);
+      try { this.ws.close(); } catch { /* noop */ }
+      this.ws = null;
+    }
+  }
   connect(port) {
     const parsed = Number.parseInt(port, 10);
     const targetPort = Number.isFinite(parsed) && parsed > 0 ? parsed : this.port;
-    const samePort = this.ws?.url ? this.ws.url.endsWith(`:${targetPort}`) : false;
+    const samePort = this.ws && this.port === targetPort;
+    this.clearReconnectTimer();
     if (this.ws && samePort) {
       const ready = this.ws.readyState;
       if (ready === 1 || ready === 0) {
@@ -103,13 +186,17 @@ class OverlaySync {
       this.setActiveSessionKey(key);
     }
   }
-handleWsClose(event) {
+  handleWsClose(event) {
     if (event?.target) this.detachWs(event.target);
     if (event?.target === this.ws) {
       this.ws = null;
+      this.scheduleReconnect();
     }
   }
-  handleWsError() {
+  handleWsError(event) {
+    if (event?.target === this.ws) {
+      this.scheduleReconnect();
+    }
     // suppress connection errors to keep renderer logs quiet
   }
   handleWsMessage(event) {
@@ -158,6 +245,18 @@ handleWsClose(event) {
     } else {
       this.pendingSessionKey = normalized;
     }
+  }
+  dispose() {
+    this.allowReconnect = false;
+    this.clearReconnectTimer();
+    this.stop();
+    if (this.ws) {
+      this.detachWs(this.ws);
+      try { this.ws.close(); } catch { /* noop */ }
+      this.ws = null;
+    }
+    this.pendingTime = null;
+    this.pendingSessionKey = null;
   }
 }
 
@@ -256,6 +355,31 @@ function handleRemoteNowPlaying(raw) {
     stopRemoteProgressTimer();
   }
   updateActiveCacheInfo();
+}
+
+function clearRemoteTimelineMonitor({ resetSessions = true } = {}) {
+  state.remoteNowPlaying = null;
+  state.remoteMediaKey = '';
+  state.remoteLastGuid = '';
+  state.remoteLastUpdate = Date.now();
+  if (resetSessions) {
+    state.remoteSessions = [];
+    state.remoteSelectedKey = '';
+    state.remoteActiveSessionKey = '';
+  }
+  stopRemoteProgressTimer();
+  clearRemoteCover();
+  if (dom.video) {
+    dom.video.dataset.remoteStatus = 'unknown';
+    dom.video.classList.remove('is-remote-playing', 'is-remote-paused');
+  }
+  updateRemotePlayerUi();
+  updateActiveCacheInfo();
+  if (state.useRemoteTimeline) {
+    applyRemoteMediaUiState();
+    updateVideoCacheSelect(state.remoteSelectedKey || state.remoteActiveSessionKey);
+    applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
+  }
 }
 
 
@@ -1478,6 +1602,48 @@ function playVideo(url, { autoPlay = false } = {}) {
   syncOverlayConnection();
 }
 
+function captureVideoResumeState() {
+  const video = dom.video;
+  if (!video) return null;
+  const time = Number(video.currentTime);
+  return {
+    time: Number.isFinite(time) ? time : 0,
+    wasPlaying: !video.paused && !video.ended
+  };
+}
+
+function resumeVideoPlayback(snapshot) {
+  if (!snapshot) return;
+  const video = dom.video;
+  if (!video) return;
+  const expectedSrc = video.src;
+  const applyResume = () => {
+    if (expectedSrc && video.src !== expectedSrc) return;
+    let target = snapshot.time;
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      target = Math.min(target, Math.max(0, video.duration - 0.05));
+    }
+    if (Number.isFinite(target) && target > 0) {
+      try { video.currentTime = target; } catch { /* noop */ }
+    }
+    if (snapshot.wasPlaying) {
+      video.play().catch(() => { /* ignore autoplay error */ });
+    }
+  };
+
+  if (video.readyState >= 1) {
+    applyResume();
+    return;
+  }
+  const handleReady = () => {
+    video.removeEventListener('loadedmetadata', handleReady);
+    video.removeEventListener('loadeddata', handleReady);
+    applyResume();
+  };
+  video.addEventListener('loadedmetadata', handleReady);
+  video.addEventListener('loadeddata', handleReady);
+}
+
 function releaseObjectUrl() {
   if (!state.objectUrl) return;
   try { URL.revokeObjectURL(state.objectUrl); } catch { /* ignore */ }
@@ -1492,6 +1658,76 @@ function syncOverlayConnection({ delay = 0 } = {}) {
   } else {
     overlaySync.start();
   }
+}
+
+async function handlePortChange({ previousPort, nextPort } = {}) {
+  const prev = Number.parseInt(previousPort, 10);
+  const next = Number.parseInt(nextPort, 10);
+  const portChanged = Number.isInteger(prev) && Number.isInteger(next) ? prev !== next : true;
+
+  if (!portChanged) {
+    syncOverlayConnection();
+    return;
+  }
+
+  const changeToken = ++portChangeToken;
+
+  const initialVideoEntry = getEntryById(state.activeVideoId);
+  const initialSubsEntry = getEntryById(state.activeSubsId);
+  const hasInitialVideo = Boolean(initialVideoEntry && initialVideoEntry.hasVideo && initialVideoEntry.videoFilename);
+  const hasInitialSubs = Boolean(initialSubsEntry && initialSubsEntry.hasSubs && initialSubsEntry.subsPath);
+  const targetPort = Number.isInteger(next) && next > 0 ? next : getCurrentPort();
+  overlaySync.preparePortSwitch(targetPort);
+  clearRemoteTimelineMonitor({ resetSessions: true });
+  const shouldWaitForServer = hasInitialVideo || hasInitialSubs || Boolean(state.currentAssText);
+  if (shouldWaitForServer) {
+    const ready = await waitForOverlayServerReadyUntil(targetPort, changeToken);
+    if (!ready || changeToken !== portChangeToken) return;
+  }
+
+  const videoEntry = getEntryById(state.activeVideoId);
+  const subsEntry = getEntryById(state.activeSubsId);
+  const hasVideo = Boolean(videoEntry && videoEntry.hasVideo && videoEntry.videoFilename);
+  const hasSubs = Boolean(subsEntry && subsEntry.hasSubs && subsEntry.subsPath);
+  const resumeSnapshot = hasVideo ? captureVideoResumeState() : null;
+
+  if (hasVideo && dom.video) {
+    try { dom.video.pause(); } catch { /* noop */ }
+    dom.video.removeAttribute('src');
+    try { dom.video.load(); } catch { /* noop */ }
+    setVideoPlaceholder(true);
+  }
+
+  let synced = false;
+
+  if (hasVideo) {
+    await loadVideoEntry(videoEntry);
+    resumeVideoPlayback(resumeSnapshot);
+    synced = true;
+  }
+
+  if (hasSubs) {
+    await loadSubtitleEntry(subsEntry);
+    applySubtitleOffsetForSelection({ videoId: state.activeVideoId, subsId: state.activeSubsId });
+    synced = true;
+  } else if (state.currentAssText) {
+    const style = collectStyle();
+    state.overlayRefreshSeq += 1;
+    const refreshToken = `subs-${Date.now()}-${state.overlayRefreshSeq}`;
+    notifyOverlayWithCurrentFonts({
+      style,
+      subContent: state.currentAssText,
+      refreshToken
+    });
+    syncOverlayConnection();
+    synced = true;
+  }
+
+  if (!synced) {
+    syncOverlayConnection();
+  }
+
+  updateActiveCacheInfo({ video: videoEntry || null, subs: subsEntry || null });
 }
 
 async function refreshCachedEntries({ activeVideoId = state.activeVideoId, activeSubsId = state.activeSubsId } = {}) {
@@ -1618,6 +1854,7 @@ export {
   renderBinProgress,
   setBinInfo,
   syncOverlayConnection,
+  handlePortChange,
   updateActiveCacheInfo,
   initializeCacheControls
 };

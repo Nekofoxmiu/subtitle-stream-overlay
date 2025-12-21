@@ -53,6 +53,7 @@ import {
   handleLocalFileSelected,
   handleCheckBins,
   setBinInfo,
+  handlePortChange,
   syncOverlayConnection,
   initializeCacheControls
 } from './modules/media-library.mjs';
@@ -218,11 +219,25 @@ function setupEventHandlers() {
 
   const portEl = dom.portInput;
   if (portEl) {
+    if (!portEl.dataset.lastPort) {
+      portEl.dataset.lastPort = portEl.value || String(DEFAULT_PORT);
+    }
     const persistPortChange = async () => {
       const style = collectStyle();
+      const nextPort = style.port;
+      const prevPort = Number.parseInt(portEl.dataset.lastPort || String(nextPort), 10);
+      const portChanged = Number.isInteger(prevPort) && Number.isInteger(nextPort) ? prevPort !== nextPort : true;
+      if (portChanged) {
+        overlaySync.stop();
+        state.overlayRefreshSeq += 1;
+        const clearToken = `port-change-${Date.now()}-${state.overlayRefreshSeq}`;
+        window.api.notifyOverlay({ clearToken });
+        window.api.notifyOverlay({ clearToken: null });
+      }
       await persistStyle(style);
       window.api.notifyOverlay({ style });
-      syncOverlayConnection();
+      await handlePortChange({ previousPort: prevPort, nextPort });
+      portEl.dataset.lastPort = String(nextPort);
     };
     const runPortSync = () => {
       void persistPortChange();
@@ -318,7 +333,10 @@ async function loadInitialConfig() {
 
   const configuredPort = Number.parseInt(output.port, 10);
   const effectivePort = Number.isInteger(configuredPort) ? configuredPort : DEFAULT_PORT;
-  if (dom.portInput) dom.portInput.value = String(effectivePort);
+  if (dom.portInput) {
+    dom.portInput.value = String(effectivePort);
+    dom.portInput.dataset.lastPort = String(effectivePort);
+  }
   if (output.maxWidth != null) dom.maxWidth.value = String(output.maxWidth);
   if (output.maxHeight != null) dom.maxHeight.value = String(output.maxHeight);
 

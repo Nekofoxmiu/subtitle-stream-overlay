@@ -38,8 +38,39 @@ let mainWindow;
 
 let overlayServer;
 let overlayServerStartPromise = null;
+let overlayServerQueue = Promise.resolve();
 
 let currentOverlayPort = null;
+
+const OVERLAY_READY_DEFAULT_TIMEOUT_MS = 10000;
+const OVERLAY_READY_DEFAULT_INTERVAL_MS = 200;
+
+export async function waitForOverlayServerReady(port, {
+  timeoutMs = OVERLAY_READY_DEFAULT_TIMEOUT_MS,
+  intervalMs = OVERLAY_READY_DEFAULT_INTERVAL_MS
+} = {}) {
+  const targetPort = normalizeOverlayPort(port);
+  if (!Number.isInteger(targetPort) || targetPort <= 0) return false;
+  const normalizedTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : OVERLAY_READY_DEFAULT_TIMEOUT_MS;
+  const normalizedInterval = Number.isFinite(intervalMs) && intervalMs > 0
+    ? intervalMs
+    : OVERLAY_READY_DEFAULT_INTERVAL_MS;
+  if (overlayServer && currentOverlayPort === targetPort) return true;
+  const deadline = Date.now() + normalizedTimeout;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, normalizedInterval));
+    if (overlayServer && currentOverlayPort === targetPort) return true;
+  }
+  return Boolean(overlayServer && currentOverlayPort === targetPort);
+}
+
+function queueOverlayServerTask(task) {
+  const next = overlayServerQueue.then(task, task);
+  overlayServerQueue = next.catch(() => {});
+  return next;
+}
 
 function createOverlayServerInstance() {
   return new OverlayServer({
@@ -62,38 +93,42 @@ async function stopOverlayServer() {
   await waitForOverlayServerStart();
   if (!overlayServer) return;
   const srv = overlayServer;
-  overlayServer = null;
-  currentOverlayPort = null;
   try {
     await srv.close();
   } catch {
     // best effort shutdown
   }
+  if (overlayServer === srv) {
+    overlayServer = null;
+    currentOverlayPort = null;
+  }
 }
 
 async function startOverlayServer(port) {
-  const normalizedPort = normalizeOverlayPort(port);
-  await waitForOverlayServerStart();
-  if (overlayServer && currentOverlayPort === normalizedPort) return;
-  if (overlayServer) await stopOverlayServer();
-  const srv = createOverlayServerInstance();
-  const pendingPromise = (async () => {
+  return queueOverlayServerTask(async () => {
+    const normalizedPort = normalizeOverlayPort(port);
+    await waitForOverlayServerStart();
+    if (overlayServer && currentOverlayPort === normalizedPort) return;
+    if (overlayServer) await stopOverlayServer();
+    const srv = createOverlayServerInstance();
+    const pendingPromise = (async () => {
+      try {
+        await srv.listen(normalizedPort);
+        overlayServer = srv;
+        currentOverlayPort = normalizedPort;
+      } catch (err) {
+        await srv.close().catch(() => { });
+        throw err;
+      }
+    })();
+    overlayServerStartPromise = pendingPromise;
     try {
-      await srv.listen(normalizedPort);
-      overlayServer = srv;
-      currentOverlayPort = normalizedPort;
-    } catch (err) {
-      await srv.close().catch(() => { });
-      throw err;
+      await pendingPromise;
+    } finally {
+      if (overlayServerStartPromise === pendingPromise) overlayServerStartPromise = null;
+      if (!overlayServer) currentOverlayPort = null;
     }
-  })();
-  overlayServerStartPromise = pendingPromise;
-  try {
-    await pendingPromise;
-  } finally {
-    if (overlayServerStartPromise === pendingPromise) overlayServerStartPromise = null;
-    if (!overlayServer) currentOverlayPort = null;
-  }
+  });
 }
 
 function createMainWindow() {
