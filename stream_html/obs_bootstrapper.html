@@ -1,0 +1,192 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OBS Bootstrapper</title>
+<style>
+  :root { --fg:#222; --muted:#666; --ok:#0a7; --warn:#c70; --bg:t; }
+  html,body { height:100%; margin:0; background:var(--bg); font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", Arial, sans-serif; color:var(--fg); }
+  .wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  .card { width:min(720px, 92vw); background:#fff; border:1px solid #ddd; border-radius:16px; padding:24px; box-shadow:0 10px 30px rgba(0,0,0,.06);}
+  .row { display:flex; gap:16px; align-items:center; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--warn); }
+  .ok  { background:var(--ok); }
+  .muted { color:var(--muted); font-size:14px; }
+  .log { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; background:#fafafa; border:1px solid #eee; border-radius:10px; padding:10px; max-height:30vh; overflow:auto; white-space:pre-wrap; }
+  .hidden { display:none; }
+  iframe { position:fixed; inset:0; width:100%; height:100%; border:0; }
+  button { padding:8px 12px; border-radius:10px; border:1px solid #ccc; background:#fff; cursor:pointer; }
+</style>
+
+<body>
+  <!-- 等待／狀態區 -->
+  <div id="waiting" class="wrap">
+    <div class="card">
+      <div class="row">
+        <div id="led" class="dot"></div>
+        <h2 style="margin:0">等待本機應用啟動中</h2>
+      </div>
+      <p class="muted" id="hint">將自動偵測後端並載入頁面，無需手動重整。</p>
+      <div class="row" style="gap:8px; margin:8px 0 0 0;">
+        <button id="forceCheck">立即重試</button>
+        <button id="toggleLog">顯示/隱藏記錄</button>
+      </div>
+      <div id="log" class="log" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <!-- 內嵌的實際應用頁 -->
+  <iframe id="app" class="hidden" referrerpolicy="no-referrer"></iframe>
+
+  <script>
+    const CONFIG = {
+      targetHttp : "http://127.0.0.1:59837/overlay",
+      wsUrl      : "ws://127.0.0.1:59837/ws",
+      retry: { initialMs: 1000, maxMs: 2000, factor: 1.6, jitter: 0.25 },
+      heartbeat: { intervalMs: 4000, timeoutMs: 9000 }
+    };
+    
+    const el = {
+      waiting: document.getElementById('waiting'),
+      iframe : document.getElementById('app'),
+      led    : document.getElementById('led'),
+      log    : document.getElementById('log'),
+      force  : document.getElementById('forceCheck'),
+      toggle : document.getElementById('toggleLog')
+    };
+    
+    function log(msg){
+      const t=new Date().toLocaleTimeString();
+      el.log.textContent += `[${t}] ${msg}\n`;
+      el.log.scrollTop = el.log.scrollHeight;
+    }
+    const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
+    function backoffGen(cfg){
+      let cur = cfg.initialMs;
+      return () => {
+        const j = 1 + (Math.random()*2 - 1)*cfg.jitter;
+        const val = Math.min(cur*j, cfg.maxMs);
+        cur = Math.min(cur*cfg.factor, cfg.maxMs);
+        return Math.max(250, Math.floor(val));
+      };
+    }
+    
+    function showWaiting(){
+      el.iframe.classList.add('hidden');
+      el.waiting.classList.remove('hidden');
+      el.led.classList.remove('ok');
+    }
+    function showApp(){
+      el.waiting.classList.add('hidden');
+      el.iframe.classList.remove('hidden');
+      el.led.classList.add('ok');
+    }
+    
+    /* ====== simple 版核心：持久 WS + 心跳 ====== */
+    let monitorWS = null;
+    let hbTimer = null;
+    let hbDeadline = 0;
+    
+    function startHeartbeat(){
+      stopHeartbeat();
+      const { intervalMs, timeoutMs } = CONFIG.heartbeat;
+      const tick = () => {
+        if (Date.now() > hbDeadline) {
+          log('心跳逾時，準備斷線收尾。');
+          teardown();
+          return;
+        }
+        try { monitorWS?.readyState === WebSocket.OPEN && monitorWS.send('ping'); } catch {}
+      };
+      hbDeadline = Date.now() + timeoutMs;
+      hbTimer = setInterval(tick, intervalMs);
+    }
+    function stopHeartbeat(){
+      if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
+    }
+    
+    function teardown(){
+      stopHeartbeat();
+      try {
+        // 清空並隱藏 iframe，避免 OBS 殘影（保留最後一幀）
+        el.iframe.src = 'about:blank';
+      } catch {}
+      showWaiting();
+      try { monitorWS && monitorWS.close(); } catch {}
+      monitorWS = null;
+    }
+    
+    function openMonitorWS(){
+      return new Promise(resolve => {
+        try {
+          const ws = new WebSocket(CONFIG.wsUrl);
+          let opened = false;
+    
+          ws.onopen = () => {
+            opened = true;
+            monitorWS = ws;
+            const bump = () => { hbDeadline = Date.now() + CONFIG.heartbeat.timeoutMs; };
+            ws.onmessage = () => { bump(); };
+            ws.onerror   = () => { log('監測 WS onerror'); teardown(); };
+            ws.onclose   = () => { log('監測 WS onclose'); teardown(); };
+            startHeartbeat();
+            resolve(true);
+          };
+    
+          // 2 秒內未開啟視為失敗
+          const t = setTimeout(() => {
+            if (!opened) {
+              try { ws.close(); } catch {}
+              resolve(false);
+            }
+          }, 2000);
+          ws.addEventListener('open', () => clearTimeout(t), { once:true });
+        } catch {
+          resolve(false);
+        }
+      });
+    }
+    
+    async function main(){
+      showWaiting();
+      const next = backoffGen(CONFIG.retry);
+    
+      while (true) {
+        log('嘗試建立監測連線…');
+        const ok = await openMonitorWS();
+        if (ok) {
+          log('監測連線已建立，載入 overlay。');
+          el.iframe.src = CONFIG.targetHttp;
+          showApp();
+    
+          // 等待監測連線結束（由 onclose/onerror 或心跳逾時觸發 teardown）
+          await new Promise(r => {
+            const chk = setInterval(() => {
+              if (!monitorWS || monitorWS.readyState !== WebSocket.OPEN) {
+                clearInterval(chk);
+                r();
+              }
+            }, 300);
+          });
+          log('監測連線結束，準備重試。');
+        }
+    
+        const ms = next();
+        log(`重試前等待 ${ms} ms…`);
+        await sleep(ms);
+      }
+    }
+    
+    /* ====== UI 維持：按鈕功能 ====== */
+    el.force.addEventListener('click', () => {
+      log('手動觸發重連。');
+      // 若當前無連線，main 會立即嘗試；有連線則由 onclose/onerror 接手
+      try { monitorWS?.close(); } catch {}
+    });
+    el.toggle.addEventListener('click', () => { el.log.classList.toggle('hidden'); });
+    
+    main();
+    </script>    
+</body>
