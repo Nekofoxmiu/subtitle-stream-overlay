@@ -18,7 +18,7 @@
     
 - **YouTube 下載整合**：透過 yt-dlp 與 FFmpeg 取得影片、音訊或字幕，並提供語言選擇、進度回報與快取註冊，方便離線準備素材。
   
-- **自動安裝必要工具**：若偵測不到 yt-dlp 或 FFmpeg，系統會提示並自動下載 Windows 版本執行檔與解壓縮，免去手動配置。
+- **自動安裝必要工具**：若偵測不到 yt-dlp、FFmpeg 或 QuickJS runtime，系統會提示並自動下載 Windows 版本，免去手動配置。
   
 - **預覽播放器與時間同步**：內建播放器可播放快取或本地檔案，並透過 WebSocket 定期傳送時間軸讓 overlay 同步顯示。  
   
@@ -41,7 +41,7 @@
 **請注意，如果要修改port主程式與HTML都要修改，因此除非必要，不推薦修改**  
 **連結：**[Chrome 插件下載頁面](https://chromewebstore.google.com/detail/subtitle-stream-overlay-%E7%B6%B2/lbgnehjpebfopbahahldjnhgalbnjlfh)
 
-1. **首次檢查工具**：開啟應用時若缺少 yt-dlp 或 FFmpeg，介面會提示是否自動下載並顯示進度；完成後即可在上方狀態列看到可用的提示。  
+1. **首次檢查工具**：開啟應用時若缺少 yt-dlp、FFmpeg 或 QuickJS runtime，介面會提示是否自動下載並顯示進度；完成後即可在上方狀態列看到可用的提示。  
       
 2. **匯入或下載素材**：  
    - 點選「選取字幕」匯入本地檔案，會自動轉為 ASS 並儲存至快取。  
@@ -70,7 +70,7 @@
 ## 手動從源安裝步驟
 需求：
 - Node.js 21 以上（建議使用 LTS 版本）
-- Windows 使用者可直接利用自動安裝的 yt-dlp/FFmpeg；其他平台需手動提供對應的二進位檔案，因預設下載的是 `.exe`。
+- Windows 使用者可直接利用自動安裝的 yt-dlp/FFmpeg/QuickJS；其他平台需手動提供對應的二進位檔案，因預設下載的是 `.exe`。
 1. 下載或複製本專案。
 2. 安裝相依套件：
    ```bash
@@ -85,6 +85,15 @@
 如需打包或建立安裝檔，可使用：
 - `npm run package` 生成平台專屬的打包檔案。
 - `npm run make` 依據 forge 設定建立安裝器或壓縮檔。
+- `npm run release:github` 執行完整 GitHub 發布流程（需先設定 `GITHUB_TOKEN`）。
+- `npm run release:github:skip-install` 跳過 `npm ci`（本機依賴已就緒時使用）。
+- `npm run release:github:dirty` 略過 git 乾淨狀態檢查（不建議常態使用）。
+
+### 可選：內嵌 QuickJS runtime（免首次下載）
+若你希望安裝包內直接附帶 runtime，請放置：
+- `vendor/quickjs/qjs.exe`
+
+打包時會自動複製到 `resources/bin/qjs.exe`，應用啟動時會優先使用此內嵌檔案。
 
 ## 疊加伺服器端點
 - `GET /overlay`：回傳可直接嵌入的字幕疊加頁面。

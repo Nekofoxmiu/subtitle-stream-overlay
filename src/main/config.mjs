@@ -3,7 +3,7 @@ import Store from 'electron-store';
 export const store = new Store({
   name: 'config',
   defaults: {
-    bins: { ytDlpPath: '', ffmpegPath: '' },
+    bins: { ytDlpPath: '', ffmpegPath: '', quickjsPath: '' },
     output: {
       mode: 'http',
       port: 59837,

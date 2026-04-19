@@ -1,9 +1,17 @@
+const fs = require('node:fs');
+const path = require('node:path');
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
+
+const QUICKJS_EMBED_SOURCE = path.resolve(__dirname, 'vendor', 'quickjs', 'qjs.exe');
+const extraResource = fs.existsSync(QUICKJS_EMBED_SOURCE)
+  ? [{ from: QUICKJS_EMBED_SOURCE, to: 'bin/qjs.exe' }]
+  : [];
 
 module.exports = {
   packagerConfig: {
     asar: true,
+    extraResource,
   },
   rebuildConfig: {},
   makers: [

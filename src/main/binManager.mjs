@@ -13,14 +13,38 @@ const BIN_DIR = path.join(app.getPath('userData'), 'bin');
 
 const URLS = {
   ytDlpExe: 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
-  ffmpegZip: 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+  ffmpegZip: 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+  quickJsExe: 'https://github.com/quickjs-ng/quickjs/releases/latest/download/qjs-windows-x86_64.exe'
 };
+
+function resolveExistingPath(candidate = '') {
+  return candidate && fs.existsSync(candidate) ? candidate : '';
+}
+
+function resolveBundledQuickJsPath() {
+  const appPath = app.getAppPath();
+  const candidates = [
+    process.resourcesPath ? path.join(process.resourcesPath, 'bin', 'qjs.exe') : '',
+    appPath ? path.join(appPath, 'vendor', 'quickjs', 'qjs.exe') : '',
+    appPath && appPath.toLowerCase().endsWith('.asar')
+      ? path.join(path.dirname(appPath), 'bin', 'qjs.exe')
+      : ''
+  ];
+  for (const candidate of candidates) {
+    const found = resolveExistingPath(candidate);
+    if (found) return found;
+  }
+  return '';
+}
 
 export function getBinPaths() {
   const { bins } = store.store;
+  const bundledQuickJsPath = resolveBundledQuickJsPath();
+  const storedQuickJsPath = resolveExistingPath(bins.quickjsPath || '');
   return {
     ytDlpPath: bins.ytDlpPath || '',
-    ffmpegPath: bins.ffmpegPath || ''
+    ffmpegPath: bins.ffmpegPath || '',
+    quickjsPath: storedQuickJsPath || bundledQuickJsPath || ''
   };
 }
 
@@ -32,10 +56,19 @@ function persistBinPaths(partial = {}) {
       : current.ytDlpPath || '',
     ffmpegPath: Object.prototype.hasOwnProperty.call(partial, 'ffmpegPath')
       ? partial.ffmpegPath || ''
-      : current.ffmpegPath || ''
+      : current.ffmpegPath || '',
+    quickjsPath: Object.prototype.hasOwnProperty.call(partial, 'quickjsPath')
+      ? partial.quickjsPath || ''
+      : current.quickjsPath || ''
   };
   store.set('bins', next);
   return next;
+}
+
+export function getYtDlpRuntimeArgs(binPaths = getBinPaths()) {
+  const quickjsPath = resolveExistingPath(binPaths?.quickjsPath || '');
+  if (!quickjsPath) return [];
+  return ['--js-runtimes', `quickjs:${quickjsPath}`];
 }
 
 async function ensureDir(p) { await fs.promises.mkdir(p, { recursive: true }); }
@@ -103,13 +136,19 @@ async function downloadTo(fileUrl, outPath, label, { mainWindow, id } = {}) {
 
 export async function checkAndOfferDownload(mainWindow) {
   await ensureDir(BIN_DIR);
-  let { ytDlpPath, ffmpegPath } = getBinPaths();
+  let { ytDlpPath, ffmpegPath, quickjsPath } = getBinPaths();
+  const bundledQuickJsPath = resolveBundledQuickJsPath();
+  if (!resolveExistingPath(quickjsPath) && bundledQuickJsPath) {
+    quickjsPath = bundledQuickJsPath;
+    ({ ytDlpPath, ffmpegPath, quickjsPath } = persistBinPaths({ ytDlpPath, ffmpegPath, quickjsPath }));
+  }
 
   const missing = [];
   if (!ytDlpPath || !fs.existsSync(ytDlpPath)) missing.push('yt-dlp.exe');
   if (!ffmpegPath || !fs.existsSync(ffmpegPath)) missing.push('ffmpeg.exe');
+  if (!quickjsPath || !fs.existsSync(quickjsPath)) missing.push('qjs.exe');
 
-  if (missing.length === 0) return getBinPaths();
+  if (missing.length === 0) return persistBinPaths({ ytDlpPath, ffmpegPath, quickjsPath });
 
   const r = await dialog.showMessageBox(mainWindow, {
     type: 'question',
@@ -117,7 +156,7 @@ export async function checkAndOfferDownload(mainWindow) {
     defaultId: 0,
     cancelId: 1,
     title: '缺少元件',
-    message: `偵測到缺少：${missing.join('、')}\n是否自動下載？（來源：yt-dlp GitHub releases；FFmpeg gyan.dev builds）`
+    message: `偵測到缺少：${missing.join('、')}\n是否自動下載？（來源：yt-dlp GitHub releases；FFmpeg gyan.dev builds；QuickJS-NG releases）`
   });
   if (r.response !== 0) throw new Error('使用者取消下載');
 
@@ -138,7 +177,7 @@ export async function checkAndOfferDownload(mainWindow) {
     await downloadTo(URLS.ytDlpExe, out, 'yt-dlp', { mainWindow, id: 'yt-dlp' });
     ytDlpPath = out;
     markReady('yt-dlp', 'yt-dlp');
-    ({ ytDlpPath, ffmpegPath } = persistBinPaths({ ytDlpPath, ffmpegPath }));
+    ({ ytDlpPath, ffmpegPath, quickjsPath } = persistBinPaths({ ytDlpPath, ffmpegPath, quickjsPath }));
   }
 
   // ffmpeg release essentials zip
@@ -164,11 +203,20 @@ export async function checkAndOfferDownload(mainWindow) {
     }
     ffmpegPath = found;
     markReady('ffmpeg', 'ffmpeg');
-    ({ ytDlpPath, ffmpegPath } = persistBinPaths({ ytDlpPath, ffmpegPath }));
+    ({ ytDlpPath, ffmpegPath, quickjsPath } = persistBinPaths({ ytDlpPath, ffmpegPath, quickjsPath }));
   }
 
-  ({ ytDlpPath, ffmpegPath } = persistBinPaths({ ytDlpPath, ffmpegPath }));
-  return { ytDlpPath, ffmpegPath };
+  // qjs.exe (QuickJS / QuickJS-NG runtime for yt-dlp EJS)
+  if (missing.includes('qjs.exe')) {
+    const out = path.join(BIN_DIR, 'qjs.exe');
+    await downloadTo(URLS.quickJsExe, out, 'QuickJS', { mainWindow, id: 'quickjs' });
+    quickjsPath = out;
+    markReady('quickjs', 'QuickJS');
+    ({ ytDlpPath, ffmpegPath, quickjsPath } = persistBinPaths({ ytDlpPath, ffmpegPath, quickjsPath }));
+  }
+
+  ({ ytDlpPath, ffmpegPath, quickjsPath } = persistBinPaths({ ytDlpPath, ffmpegPath, quickjsPath }));
+  return { ytDlpPath, ffmpegPath, quickjsPath };
 }
 
 export async function updateYtDlpIfAvailable(mainWindow) {

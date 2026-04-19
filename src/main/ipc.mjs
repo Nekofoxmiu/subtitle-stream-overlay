@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
-import { checkAndOfferDownload, getBinPaths } from './binManager.mjs';
+import { checkAndOfferDownload, getBinPaths, getYtDlpRuntimeArgs } from './binManager.mjs';
 import { getConfig, setConfig, store } from './config.mjs';
 import { updateOverlayState, waitForOverlayServerReady } from './main.mjs';
 
@@ -453,9 +453,9 @@ function run(cmd, args, opts = {}) {
   });
 }
 
-async function fetchVideoInfo(ytDlpPath, url, cookiesArgs = []) {
+async function fetchVideoInfo(ytDlpPath, url, cookiesArgs = [], runtimeArgs = []) {
   try {
-    const probeArgs = [...cookiesArgs, '--no-playlist', '-J', url];
+    const probeArgs = [...cookiesArgs, ...runtimeArgs, '--no-playlist', '-J', url];
     const { out } = await run(ytDlpPath, probeArgs, { env: buildYtDlpEnv() });
     try {
       return JSON.parse(out);
@@ -471,11 +471,15 @@ async function fetchVideoInfo(ytDlpPath, url, cookiesArgs = []) {
 async function promptSubtitleLanguage(event, {
   url,
   videoInfo,
-  cookiesArgs = []
+  cookiesArgs = [],
+  runtimeArgs = []
 } = {}) {
   const ownerWindow = event?.sender?.getOwnerBrowserWindow?.() || null;
   const { ytDlpPath } = getBinPaths();
-  const info = videoInfo || await fetchVideoInfo(ytDlpPath, url, cookiesArgs);
+  const effectiveRuntimeArgs = Array.isArray(runtimeArgs) && runtimeArgs.length
+    ? runtimeArgs
+    : getYtDlpRuntimeArgs();
+  const info = videoInfo || await fetchVideoInfo(ytDlpPath, url, cookiesArgs, effectiveRuntimeArgs);
   const manual = sortSubtitleLangs(info?.subtitles ? Object.keys(info.subtitles) : []);
   const auto = sortSubtitleLangs(info?.automatic_captions ? Object.keys(info.automatic_captions) : []);
 
@@ -543,6 +547,7 @@ async function downloadSubsForEntry({
   ytDlpPath,
   url,
   cookiesArgs = [],
+  runtimeArgs = [],
   ffmpegArgs = [],
   lang,
   useAuto = false,
@@ -559,6 +564,7 @@ async function downloadSubsForEntry({
   const outTpl = path.join(subsDir, '%(title)s_%(id)s.%(ext)s');
   const args = [
     ...cookiesArgs,
+    ...runtimeArgs,
     '--no-playlist',
     '--skip-download',
     ...(useAuto ? ['--write-auto-sub'] : ['--write-subs']),
@@ -653,8 +659,12 @@ async function startYtDlpJob(event, {
   audioFormat = 'm4a'
 } = {}) {
   if (!url) throw new Error('缺少 URL');
-  const { ytDlpPath, ffmpegPath } = getBinPaths();
+  const ownerWindow = event?.sender?.getOwnerBrowserWindow?.() || null;
+  await checkAndOfferDownload(ownerWindow);
+  const { ytDlpPath, ffmpegPath, quickjsPath } = getBinPaths();
   if (!ytDlpPath) throw new Error('yt-dlp 未設定');
+  const runtimeArgs = getYtDlpRuntimeArgs({ quickjsPath });
+  if (!runtimeArgs.length) throw new Error('QuickJS runtime 未設定，請先完成工具下載');
 
   const cfg = getConfig();
   const cookiesPath = cfg.cookiesPath || '';
@@ -672,7 +682,7 @@ async function startYtDlpJob(event, {
     : 'bestvideo[ext!=webm]+bestaudio[ext!=webm]/bestvideo+bestaudio/best';
   const cookiesArgs = cookiesPath ? ['--cookies', cookiesPath] : [];
   const ffmpegArgs = ffmpegPath ? ['--ffmpeg-location', ffmpegPath] : [];
-  let videoInfo = await fetchVideoInfo(ytDlpPath, url, cookiesArgs);
+  let videoInfo = await fetchVideoInfo(ytDlpPath, url, cookiesArgs, runtimeArgs);
   let videoId = '';
   let videoTitle = '';
   if (videoInfo) {
@@ -682,7 +692,7 @@ async function startYtDlpJob(event, {
   let subtitleChoice = null;
   let subtitlePlan = null;
   try {
-    subtitleChoice = await promptSubtitleLanguage(event, { url, videoInfo, cookiesArgs });
+    subtitleChoice = await promptSubtitleLanguage(event, { url, videoInfo, cookiesArgs, runtimeArgs });
     if (subtitleChoice?.info) videoInfo = subtitleChoice.info;
     if (subtitleChoice?.lang) {
       subtitlePlan = { lang: subtitleChoice.lang, useAuto: Boolean(subtitleChoice.useAuto) };
@@ -696,6 +706,7 @@ async function startYtDlpJob(event, {
 
   const args = [
     ...cookiesArgs,
+    ...runtimeArgs,
     ...modeArgs,
     '--no-playlist',
     '--progress',
@@ -836,6 +847,7 @@ async function startYtDlpJob(event, {
               ytDlpPath,
               url,
               cookiesArgs,
+              runtimeArgs,
               ffmpegArgs,
               lang: subtitlePlan.lang,
               useAuto: subtitlePlan.useAuto,
@@ -1047,8 +1059,12 @@ export function setupIpc(mainWindow) {
   ipcMain.handle('ytdlp:fetchSubs', async (event, { url, langs } = {}) => {
     if (!url) throw new Error('缺少 URL');
 
-    const { ytDlpPath, ffmpegPath } = getBinPaths();
+    const ownerWindow = event?.sender?.getOwnerBrowserWindow?.() || null;
+    await checkAndOfferDownload(ownerWindow);
+    const { ytDlpPath, ffmpegPath, quickjsPath } = getBinPaths();
     if (!ytDlpPath) throw new Error('yt-dlp 未設定');
+    const runtimeArgs = getYtDlpRuntimeArgs({ quickjsPath });
+    if (!runtimeArgs.length) throw new Error('QuickJS runtime 未設定，請先完成工具下載');
 
     const cfg = getConfig();
     const cookiesPath = cfg.cookiesPath || '';
@@ -1060,7 +1076,7 @@ export function setupIpc(mainWindow) {
     let selectedLangs = langs;
     let useAuto = false; // 標記是否使用自動字幕
     if (!selectedLangs) {
-      const choice = await promptSubtitleLanguage(event, { url, cookiesArgs });
+      const choice = await promptSubtitleLanguage(event, { url, cookiesArgs, runtimeArgs });
       videoInfo = choice?.info || null;
       if (!choice?.lang) {
         if (choice?.reason === 'none') throw new Error('此影片沒有可用字幕');
@@ -1077,6 +1093,7 @@ export function setupIpc(mainWindow) {
 
     const args = [
       ...cookiesArgs,
+      ...runtimeArgs,
       '--no-playlist',
       '--skip-download',
       ...(useAuto ? ['--write-auto-sub'] : ['--write-subs']), // 這行為重點：自動字幕才用 --write-auto-sub
@@ -1099,13 +1116,7 @@ export function setupIpc(mainWindow) {
       windowsVerbatimArguments: false,
       encoding: 'utf8',
       maxBuffer: 1024 * 1024 * 16,
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: 'utf-8',
-        PYTHONUTF8: '1',
-        NO_COLOR: '1',
-        ...(process.platform === 'win32' ? {} : { LANG: process.env.LANG || 'en_US.UTF-8', LC_ALL: process.env.LC_ALL || 'en_US.UTF-8' })
-      }
+      env: buildYtDlpEnv()
     });
 
     if (child.stdout) child.stdout.on('data', (d) => String(d).split(/\r?\n/).forEach(line => line && send({ type: 'log', stream: 'stdout', line })));
@@ -1121,7 +1132,7 @@ export function setupIpc(mainWindow) {
 
     // 4) 找出此次輸出的 .ass，因為改為 title_id 模板 → 以「包含 id」比對
     if (!videoInfo) {
-      videoInfo = await fetchVideoInfo(ytDlpPath, url, cookiesArgs);
+      videoInfo = await fetchVideoInfo(ytDlpPath, url, cookiesArgs, runtimeArgs);
     }
     const meta = videoInfo ? { id: videoInfo.id || '', title: videoInfo.title || '' } : { id: '', title: '' };
 

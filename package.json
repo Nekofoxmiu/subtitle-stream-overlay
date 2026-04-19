@@ -1,12 +1,15 @@
 {
   "name": "subtitle-stream-overlay",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "ASS/SRT subtitle overlay (green/transparent) via Electron + SubtitlesOctopus",
   "main": "src/main/main.mjs",
   "scripts": {
     "start": "electron-forge start",
     "package": "electron-forge package",
-    "make": "electron-forge make"
+    "make": "electron-forge make",
+    "release:github": "powershell -ExecutionPolicy Bypass -File scripts/release-github.ps1",
+    "release:github:skip-install": "powershell -ExecutionPolicy Bypass -File scripts/release-github.ps1 -SkipInstall",
+    "release:github:dirty": "powershell -ExecutionPolicy Bypass -File scripts/release-github.ps1 -SkipGitCheck"
   },
   "repository": "https://github.com/Nekofoxmiu/subtitle-stream-overlay",
   "author": "Nekofoxball",
